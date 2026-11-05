@@ -1,8 +1,107 @@
-/* Placeholder: design tokens come from DESIGN.md (phase 4). */
+/* Design tokens — source of truth: DESIGN.md (direction "Forge"). */
 :root {
   color-scheme: dark;
-  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
-  background: #07090c;
-  color: #c9d1d9;
+
+  --bg: #0b0c0e;
+  --surface: #111317;
+  --surface-sunk: #08090b;
+  --fill: #1a1d22;
+  --line: #1f2329;
+  --line-strong: #2c313a;
+  --text: #edeef0;
+  --text-2: #8d939c;
+  --steel: #9aa3ae;
+  --accent: #ff6a1a;
+  --on-accent: #0b0c0e;
+  --ok: #3ddc97;
+  --warn: #f5c518;
+  --crit: #ff5468;
+  --unknown: #9aa3ae;
+
+  --font-sans: 'Geist Variable', system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, Menlo, monospace;
+
+  --radius-panel: 18px;
+  --radius-bar: 14px;
+  --radius-control: 10px;
+  --radius-pill: 99px;
+
+  --ease-out: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-fast: 250ms;
+  --dur-panel: 800ms;
 }
-body { margin: 0; min-height: 100vh; }
+
+/* Dark is the primary theme; light is opt-in (future theme toggle). */
+:root[data-theme='light'] {
+  & {
+    color-scheme: light;
+    --bg: #f4f4f2;
+    --surface: #ffffff;
+    --surface-sunk: #ededea;
+    --fill: #e6e6e2;
+    --line: #dcdcd7;
+    --line-strong: #c8c8c2;
+    --text: #111317;
+    --text-2: #5a6069;
+    --steel: #5f656e;
+    --accent: #c2410c;
+    --on-accent: #ffffff;
+    --ok: #0f7a54;
+    --warn: #8a6400;
+    --crit: #c8283e;
+    --unknown: #5f656e;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
