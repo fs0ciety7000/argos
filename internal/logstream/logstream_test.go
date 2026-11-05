@@ -148,3 +148,26 @@ func TestParseLine(t *testing.T) {
 		t.Fatalf("invalid utf-8: %q", l.Text)
 	}
 }
+
+func TestBatchByteCapAndNoHTMLEscaping(t *testing.T) {
+	ch := make(chan Line, 100)
+	for range 100 {
+		ch <- Line{Text: strings.Repeat("<", 8<<10)}
+	}
+	batch := drain(ch, maxBatch, 64<<10)
+	if len(batch) < 8 || len(batch) > 9 {
+		t.Fatalf("batch of %d lines for a 64 KiB cap of 8 KiB lines", len(batch))
+	}
+	srv, _ := newServer(t, &fakeStreamer{lines: []string{"<b>&</b>"}}, true)
+	c, _, err := dial(t, srv, "host=vps&container=web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, b, err := c.Read(ctx)
+	if err != nil || !strings.Contains(string(b), `"text":"<b>&</b>"`) {
+		t.Fatalf("raw message %s, %v", b, err)
+	}
+}

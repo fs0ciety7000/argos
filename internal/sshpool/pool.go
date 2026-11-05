@@ -300,14 +300,22 @@ func (p *Pool) Stream(ctx context.Context, name string, cmd Command, onLine func
 	if err != nil {
 		return fmt.Errorf("%s: %w", cmd.name, err)
 	}
-	if err := sess.Start(cmd.line); err != nil {
+	// Never written: closing it sends EOF, which is how the guard script
+	// knows to stop (a signal cannot cross sudo to the root follower).
+	stdin, err := sess.StdinPipe()
+	if err != nil {
 		return fmt.Errorf("%s: %w", cmd.name, err)
 	}
+	// Registered before Start, which waits for the exec reply unbounded.
 	stop := context.AfterFunc(ctx, func() {
+		_ = stdin.Close()
 		_ = sess.Signal(ssh.SIGKILL)
 		_ = sess.Close() // unblocks the reader
 	})
 	defer stop()
+	if err := sess.Start(cmd.line); err != nil {
+		return fmt.Errorf("%s: %w", cmd.name, err)
+	}
 
 	r := bufio.NewReaderSize(stdout, MaxLineLen)
 	for {
@@ -374,7 +382,19 @@ func (p *Pool) open(ctx context.Context, name string, cmd Command) (*ssh.Session
 		}
 		return o.sess, nil
 	case <-ctx.Done():
-		_ = client.Close() // unblocks NewSession; the loop will redial
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// The server is stalling channel opens: drop the connection
+			// (unblocks NewSession; the loop will redial).
+			_ = client.Close()
+		} else {
+			// Plain cancellation (viewer left): keep the shared connection,
+			// close the session if it opens later.
+			go func() {
+				if o := <-openCh; o.sess != nil {
+					_ = o.sess.Close()
+				}
+			}()
+		}
 		return nil, fmt.Errorf("%s: open session: %w", cmd.name, ctx.Err())
 	}
 }

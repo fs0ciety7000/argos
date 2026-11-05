@@ -76,10 +76,29 @@ case "$1" in
     [ $# -eq 3 ] || usage
     [[ "$2" =~ $NAME_RE ]] || usage
     [[ "$3" =~ ^[1-9][0-9]{0,3}$ ]] && [ "$3" -le 1000 ] || usage
+    # Coolify's core logs can carry tokens: never sent to the browser.
+    [[ "$2" =~ $DENY_RE ]] && { echo "argos-docker: $2 is protected" >&2; exit 65; }
     id=$(resolve "$2")
-    # stdout and stderr of the container, merged; ends with the SSH session
-    # (SIGPIPE) or after one hour at most.
-    exec timeout 3600 docker logs --follow --timestamps --tail "$3" -- "$id" 2>&1
+    # At most MAX_STREAMS root followers at once, even if Argos misbehaves.
+    MAX_STREAMS=6
+    install -d -m 0700 /run/argos-docker
+    slot=""
+    for i in $(seq 1 "$MAX_STREAMS"); do
+      exec 9>"/run/argos-docker/logs.$i"
+      if flock -n 9; then slot=$i; break; fi
+      exec 9>&-
+    done
+    [ -n "$slot" ] || { echo "argos-docker: too many log streams" >&2; exit 66; }
+    # stdout and stderr of the container, merged, one hour at most. A
+    # SIGKILL from the SSH client cannot cross sudo, so stop on stdin EOF
+    # instead (the channel closing) or when docker logs ends on its own.
+    timeout 3600 docker logs --follow --timestamps --tail "$3" -- "$id" 2>&1 9>&- &
+    logs_pid=$!
+    cat <&0 >/dev/null 2>&1 9>&- &
+    stdin_pid=$!
+    wait -n "$logs_pid" "$stdin_pid" || true
+    kill "$logs_pid" "$stdin_pid" 2>/dev/null || true
+    wait 2>/dev/null || true
     ;;
   *)
     usage

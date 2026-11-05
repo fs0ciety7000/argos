@@ -3,6 +3,7 @@
 package logstream
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -24,7 +25,12 @@ const (
 	maxStreams   = 4
 	lineBuffer   = 2000
 	flushEvery   = 200 * time.Millisecond
-	maxBatch     = 500 // lines per message: caps the rate at 2500 lines/s
+	maxBatch     = 500       // lines per message: caps the rate at 2500 lines/s
+	maxBatchSize = 256 << 10 // bytes of text per message
+	pingEvery    = 30 * time.Second
+	// endGrace bounds how long a closing viewer keeps its slot while the
+	// remote follower shuts down.
+	endGrace     = 10 * time.Second
 	writeTimeout = 10 * time.Second
 	recheckEvery = 15 * time.Second
 )
@@ -76,7 +82,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "too many log streams", http.StatusServiceUnavailable)
 		return
 	}
-	defer h.active.Add(-1)
+	// The slot is released only once the remote session has ended (see
+	// below), so the limit reflects real SSH sessions.
+	slotHeld := true
+	defer func() {
+		if slotHeld {
+			h.active.Add(-1)
+		}
+	}()
 
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
@@ -92,6 +105,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ended := make(chan error, 1)
 	go func() {
 		ended <- h.Streamer.Stream(ctx, host, cmd, func(b []byte, truncated bool) {
+			if len(lines) == cap(lines) { // full: drop before paying for parsing
+				dropped.Add(1)
+				return
+			}
 			select {
 			case lines <- parseLine(b, truncated):
 			default:
@@ -99,14 +116,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		})
 	}()
+	// On exit, wait (bounded) for the remote follower to stop before the
+	// deferred release of the slot.
+	defer func() {
+		cancel()
+		select {
+		case <-ended:
+		case <-time.After(endGrace):
+			h.Logger.Warn("log stream slow to stop", "host", host, "container", name)
+			slotHeld = false
+			go func() { <-ended; h.active.Add(-1) }()
+		}
+	}()
 
 	flush := time.NewTicker(flushEvery)
 	defer flush.Stop()
 	recheck := time.NewTicker(recheckEvery)
 	defer recheck.Stop()
+	ping := time.NewTicker(pingEvery) // keeps quiet streams alive through proxies
+	defer ping.Stop()
 	send := func(all bool) error {
 		for {
-			batch := drain(lines, maxBatch)
+			batch := drain(lines, maxBatch, maxBatchSize)
 			d := dropped.Swap(0)
 			if len(batch) == 0 && d == 0 {
 				return nil
@@ -124,12 +155,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		case err := <-ended:
+			ended <- err // let the deferred wait see it
 			if send(true) != nil {
 				return
 			}
 			_ = write(ctx, conn, message{Type: "end", Reason: reason(err)})
 			conn.Close(websocket.StatusNormalClosure, "stream ended")
 			return
+		case <-ping.C:
+			pctx, pcancel := context.WithTimeout(ctx, writeTimeout)
+			err := conn.Ping(pctx)
+			pcancel()
+			if err != nil {
+				return
+			}
 		case <-flush.C:
 			if send(false) != nil {
 				return
@@ -143,12 +182,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func drain(ch <-chan Line, max int) []Line {
+// drain takes up to max lines and about maxBytes of text from ch.
+func drain(ch <-chan Line, max, maxBytes int) []Line {
 	var out []Line
-	for len(out) < max {
+	size := 0
+	for len(out) < max && size < maxBytes {
 		select {
 		case l := <-ch:
 			out = append(out, l)
+			size += len(l.Text) + len(l.TS)
 		default:
 			return out
 		}
@@ -198,11 +240,14 @@ func parseLine(b []byte, truncated bool) Line {
 }
 
 func write(ctx context.Context, conn *websocket.Conn, m message) error {
-	b, err := json.Marshal(m)
-	if err != nil {
+	// No HTML escaping: it would turn every '<' of a hostile log into 6 bytes.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
 	defer cancel()
-	return conn.Write(ctx, websocket.MessageText, b)
+	return conn.Write(ctx, websocket.MessageText, bytes.TrimRight(buf.Bytes(), "\n"))
 }
