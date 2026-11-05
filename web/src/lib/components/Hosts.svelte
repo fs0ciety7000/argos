@@ -48,11 +48,19 @@
     }
   })
 
+  let notice = $state<string | null>(null)
+
   async function reconnect(name: string) {
     pending[name] = true
+    notice = null
     try {
       await reconnectHost(name)
       setTimeout(refresh, 800)
+    } catch (err) {
+      notice =
+        err instanceof ApiError && err.status === 429
+          ? `Reconnexion déjà demandée pour ${name}, patiente quelques secondes.`
+          : `Reconnexion de ${name} impossible.`
     } finally {
       setTimeout(() => (pending[name] = false), 800)
     }
@@ -120,6 +128,9 @@
 
   {#if loadError}
     <p class="banner mono" role="alert">■ {loadError}</p>
+  {/if}
+  {#if notice}
+    <p class="banner mono" role="status">{notice}</p>
   {/if}
 
   {#if hosts === null}
@@ -195,7 +206,9 @@
         <button type="button" class="primary" onclick={copyKey}>{copied ? 'Copiée ✓' : 'Copier'}</button>
       </div>
       <p class="hint">
-        À ajouter sur chaque hôte, dans <code class="mono">~/.ssh/authorized_keys</code> de l’utilisateur configuré :
+        À ajouter sur chaque hôte, dans <code class="mono">~/.ssh/authorized_keys</code> de l’utilisateur configuré.
+        L’option <code class="mono">restrict</code> interdit tunnels, transferts et terminal : Argos n’exécute que des
+        commandes nommées, et une clé volée ne pourrait pas ouvrir de tunnel.
       </p>
       <pre class="mono">{key.publicKey}</pre>
     </section>

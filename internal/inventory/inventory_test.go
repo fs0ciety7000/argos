@@ -50,3 +50,13 @@ func TestParseRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCanonicalAddress(t *testing.T) {
+	hosts, err := Parse(`[{"name":"a","kind":"vps","address":"Box.Example.COM","user":"u"},{"name":"b","kind":"vps","address":"2001:DB8:0:0::1","user":"u"}]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hosts[0].Address != "box.example.com" || hosts[1].Address != "2001:db8::1" {
+		t.Fatalf("not canonical: %q %q", hosts[0].Address, hosts[1].Address)
+	}
+}

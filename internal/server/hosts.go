@@ -32,6 +32,11 @@ func registerHosts(api *http.ServeMux, h Hosts) {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown host"})
 				return
 			}
+			if errors.Is(err, sshpool.ErrReconnectThrottled) {
+				w.Header().Set("Retry-After", "10")
+				writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "reconnect requested too recently"})
+				return
+			}
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 			return
 		}

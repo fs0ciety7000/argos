@@ -10,6 +10,7 @@ import (
 	"net"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Kind is the type of a host. It decides which actions are allowed.
@@ -69,6 +70,13 @@ func Parse(raw string) ([]Host, error) {
 		h := &hosts[i]
 		if h.Port == 0 {
 			h.Port = 22
+		}
+		// Canonical address, so "Box.example.com" or another spelling of
+		// the same IPv6 cannot create a second, unpinned known_hosts entry.
+		if ip := net.ParseIP(h.Address); ip != nil {
+			h.Address = ip.String()
+		} else {
+			h.Address = strings.ToLower(h.Address)
 		}
 		if err := h.validate(); err != nil {
 			return nil, fmt.Errorf("ARGOS_HOSTS[%d] (%q): %w", i, h.Name, err)

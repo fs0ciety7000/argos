@@ -41,6 +41,16 @@ func NewHostKeys(path string, onLearn func(host, fingerprint string)) (*HostKeys
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	f.Close()
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	if info.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("%s is writable by group/others (mode %o); chmod 600 it", path, info.Mode().Perm())
+	}
 	k := &HostKeys{path: path, onLearn: onLearn}
 	if err := k.reload(); err != nil {
 		return nil, err
@@ -63,6 +73,11 @@ func (k *HostKeys) Check(hostname string, remote net.Addr, key ssh.PublicKey) er
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
+	// Re-read the file on every check: the owner may have removed a line
+	// after a legitimate reinstall, and must not have to restart Argos.
+	if err := k.reload(); err != nil {
+		return err
+	}
 	err := k.cb(hostname, remote, key)
 	if err == nil {
 		return nil
@@ -80,11 +95,19 @@ func (k *HostKeys) Check(hostname string, remote net.Addr, key ssh.PublicKey) er
 	}
 
 	// First contact: trust and record.
+	existing, err := os.ReadFile(k.path)
+	if err != nil {
+		return fmt.Errorf("record host key: %w", err)
+	}
 	f, err := os.OpenFile(k.path, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("record host key: %w", err)
 	}
-	_, werr := fmt.Fprintln(f, knownhosts.Line([]string{hostname}, key))
+	line := knownhosts.Line([]string{hostname}, key) + "\n"
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		line = "\n" + line // a hand-edited last line without newline
+	}
+	_, werr := f.WriteString(line)
 	cerr := f.Close()
 	if werr != nil || cerr != nil {
 		return fmt.Errorf("record host key: %w", errors.Join(werr, cerr))

@@ -28,15 +28,18 @@ func LoadOrCreateKey(dir string) (ssh.Signer, error) {
 	}
 	path := filepath.Join(dir, keyFile)
 
-	data, err := os.ReadFile(path)
+	info, err := os.Lstat(path)
 	switch {
 	case err == nil:
-		info, statErr := os.Stat(path)
-		if statErr != nil {
-			return nil, statErr
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%s is not a regular file", path)
 		}
 		if info.Mode().Perm()&0o077 != 0 {
 			return nil, fmt.Errorf("%s is readable by group/others (mode %o); chmod 600 it", path, info.Mode().Perm())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
 		}
 		signer, err := ssh.ParsePrivateKey(data)
 		if err != nil {
@@ -44,7 +47,7 @@ func LoadOrCreateKey(dir string) (ssh.Signer, error) {
 		}
 		return signer, nil
 	case !errors.Is(err, fs.ErrNotExist):
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -55,26 +58,48 @@ func LoadOrCreateKey(dir string) (ssh.Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal key: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	// Write to a temp file, fsync, then rename: a crash never leaves an
+	// empty key that would block every later start.
+	tmp, err := os.CreateTemp(dir, ".id_ed25519-*")
 	if err != nil {
-		return nil, fmt.Errorf("create %s: %w", path, err)
+		return nil, fmt.Errorf("create key: %w", err)
 	}
-	if err := pem.Encode(f, block); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
 		return nil, err
+	}
+	if err := pem.Encode(tmp, block); err != nil {
+		tmp.Close()
+		return nil, fmt.Errorf("write key: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return nil, fmt.Errorf("install key: %w", err)
 	}
 	signer, err := ssh.NewSignerFromKey(priv)
 	if err != nil {
 		return nil, err
 	}
-	_ = os.WriteFile(path+".pub", []byte(AuthorizedKey(signer.PublicKey())+"\n"), 0o644)
+	// Informational copy of the public key; never follow a planted symlink.
+	pub := path + ".pub"
+	_ = os.Remove(pub)
+	if f, err := os.OpenFile(pub, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644); err == nil {
+		_, _ = f.WriteString(AuthorizedKey(signer.PublicKey()) + "\n")
+		_ = f.Close()
+	}
 	return signer, nil
 }
 
-// AuthorizedKey formats a public key as an authorized_keys line.
+// AuthorizedKey formats a public key as an authorized_keys line. The
+// "restrict" option disables port/agent/X11 forwarding and PTYs: plain exec
+// (all Argos needs) keeps working, and a leaked key cannot open tunnels.
 func AuthorizedKey(pub ssh.PublicKey) string {
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " argos"
+	return "restrict " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) + " argos"
 }

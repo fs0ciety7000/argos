@@ -155,7 +155,7 @@ func (f *fixture) start(t *testing.T, addr string) {
 	f.pool = New(hosts, f.signer, hk, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{
 		DialTimeout: time.Second, Keepalive: 50 * time.Millisecond,
 		MinBackoff: 20 * time.Millisecond, MaxBackoff: 100 * time.Millisecond,
-		CommandTimeout: time.Second, MaxOutput: 64,
+		CommandTimeout: time.Second, MaxOutput: 64, ReconnectEvery: time.Millisecond,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
@@ -280,11 +280,95 @@ func TestLoadOrCreateKey(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("key mode = %o", info.Mode().Perm())
 	}
-	if !strings.HasPrefix(AuthorizedKey(a.PublicKey()), "ssh-ed25519 ") {
+	if !strings.HasPrefix(AuthorizedKey(a.PublicKey()), "restrict ssh-ed25519 ") {
 		t.Fatalf("authorized key = %q", AuthorizedKey(a.PublicKey()))
 	}
 	_ = os.Chmod(filepath.Join(dir, keyFile), 0o644)
 	if _, err := LoadOrCreateKey(dir); err == nil {
 		t.Fatal("world-readable key must be refused")
+	}
+}
+
+func TestHostKeyRelearnedAfterOwnerRemovesLine(t *testing.T) {
+	f := newFixture(t, "")
+	srv := startServer(t, "127.0.0.1:0", newHostSigner(t), f.signer.PublicKey())
+	addr := srv.addr()
+	f.start(t, addr)
+	waitState(t, f.pool, StateConnected)
+
+	srv.close()
+	newKey := newHostSigner(t)
+	startServer(t, addr, newKey, f.signer.PublicKey())
+	waitState(t, f.pool, StateHostKeyChanged)
+
+	// Owner removes the stale line (legitimate reinstall), then reconnects.
+	if err := os.WriteFile(filepath.Join(f.dir, "ssh", "known_hosts"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.pool.Reconnect("box"); err != nil {
+		t.Fatal(err)
+	}
+	st := waitState(t, f.pool, StateConnected)
+	if st.HostKey != ssh.FingerprintSHA256(newKey.PublicKey()) {
+		t.Fatalf("new key not pinned: %s", st.HostKey)
+	}
+}
+
+func TestDockerCommandRefusedWithoutDocker(t *testing.T) {
+	f := newFixture(t, "")
+	srv := startServer(t, "127.0.0.1:0", newHostSigner(t), f.signer.PublicKey())
+	f.start(t, srv.addr()) // host "box" is a VPS without docker
+	waitState(t, f.pool, StateConnected)
+	cmd := Command{name: "docker-ps", line: "docker ps", needsDocker: true}
+	if _, err := f.pool.Run(context.Background(), "box", cmd); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("docker command on non-docker host: %v", err)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.execs) != 0 {
+		t.Fatalf("command reached the server: %v", srv.execs)
+	}
+}
+
+func TestReconnectThrottled(t *testing.T) {
+	hosts := []inventory.Host{{Name: "box", Kind: inventory.KindVPS, Address: "127.0.0.1", Port: 1, User: "u"}}
+	p := New(hosts, newHostSigner(t), nil, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{ReconnectEvery: time.Hour})
+	if err := p.Reconnect("box"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Reconnect("box"); !errors.Is(err, ErrReconnectThrottled) {
+		t.Fatalf("second reconnect: %v", err)
+	}
+	if err := p.Reconnect("nope"); !errors.Is(err, ErrUnknownHost) {
+		t.Fatalf("unknown host: %v", err)
+	}
+}
+
+func TestKnownHostsWithoutTrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "known_hosts")
+	other := newHostSigner(t)
+	line := "other.example " + strings.TrimSpace(string(ssh.MarshalAuthorizedKey(other.PublicKey())))
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil { // no final newline
+		t.Fatal(err)
+	}
+	hk, err := NewHostKeys(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := newHostSigner(t).PublicKey()
+	remote := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 22}
+	if err := hk.Check("box.example:22", remote, key); err != nil {
+		t.Fatalf("first contact: %v", err)
+	}
+	if err := hk.Check("box.example:22", remote, key); err != nil {
+		t.Fatalf("known host after append: %v", err)
+	}
+	if err := hk.Check("other.example:22", remote, other.PublicKey()); err != nil {
+		t.Fatalf("pre-existing line corrupted: %v", err)
+	}
+	_ = os.Chmod(path, 0o666)
+	if _, err := NewHostKeys(path, nil); err == nil {
+		t.Fatal("world-writable known_hosts must be refused")
 	}
 }

@@ -45,6 +45,9 @@ type Status struct {
 type Command struct {
 	name string
 	line string
+	// needsDocker restricts the command to VPS hosts with docker enabled.
+	// Enforced in Run, so a wrong host name can never reach a seedbox.
+	needsDocker bool
 }
 
 // Name identifies the command in logs.
@@ -52,9 +55,9 @@ func (c Command) Name() string { return c.name }
 
 // Read-only commands available on every host.
 var (
-	CmdUname   = Command{"uname", "uname -srm"}
-	CmdUptime  = Command{"uptime", "cat /proc/uptime /proc/loadavg"}
-	CmdMeminfo = Command{"meminfo", "cat /proc/meminfo"}
+	CmdUname   = Command{name: "uname", line: "uname -srm"}
+	CmdUptime  = Command{name: "uptime", line: "cat /proc/uptime /proc/loadavg"}
+	CmdMeminfo = Command{name: "meminfo", line: "cat /proc/meminfo"}
 )
 
 // Options tune timings; zero values get production defaults.
@@ -65,6 +68,9 @@ type Options struct {
 	MaxBackoff     time.Duration
 	CommandTimeout time.Duration
 	MaxOutput      int
+	// ReconnectEvery is the minimum interval between two manual reconnects
+	// of the same host (protects remote fail2ban and the logs).
+	ReconnectEvery time.Duration
 }
 
 func (o *Options) defaults() {
@@ -86,6 +92,9 @@ func (o *Options) defaults() {
 	if o.MaxOutput == 0 {
 		o.MaxOutput = 1 << 20
 	}
+	if o.ReconnectEvery == 0 {
+		o.ReconnectEvery = 10 * time.Second
+	}
 }
 
 // ErrNotConnected is returned by Run when the host has no live connection.
@@ -93,6 +102,12 @@ var ErrNotConnected = errors.New("host not connected")
 
 // ErrUnknownHost is returned for a name not in the inventory.
 var ErrUnknownHost = errors.New("unknown host")
+
+// ErrReconnectThrottled is returned when reconnects come too fast.
+var ErrReconnectThrottled = errors.New("reconnect requested too recently")
+
+// ErrNotAllowed is returned when a command is not permitted on a host.
+var ErrNotAllowed = errors.New("command not allowed on this host")
 
 // Pool manages the connections.
 type Pool struct {
@@ -108,9 +123,10 @@ type conn struct {
 	host inventory.Host
 	kick chan struct{}
 
-	mu     sync.Mutex
-	client *ssh.Client
-	status Status
+	mu       sync.Mutex
+	client   *ssh.Client
+	status   Status
+	lastKick time.Time
 }
 
 // New creates a pool; call Start to connect.
@@ -156,6 +172,13 @@ func (p *Pool) Reconnect(name string) error {
 	if !ok {
 		return ErrUnknownHost
 	}
+	c.mu.Lock()
+	if !c.lastKick.IsZero() && time.Since(c.lastKick) < p.opts.ReconnectEvery {
+		c.mu.Unlock()
+		return ErrReconnectThrottled
+	}
+	c.lastKick = time.Now()
+	c.mu.Unlock()
 	select {
 	case c.kick <- struct{}{}:
 	default: // a reconnect is already pending
@@ -173,6 +196,9 @@ func (p *Pool) Run(ctx context.Context, name string, cmd Command) ([]byte, error
 	if cmd.line == "" {
 		return nil, errors.New("invalid command")
 	}
+	if cmd.needsDocker && (c.host.Kind != inventory.KindVPS || !c.host.Docker) {
+		return nil, fmt.Errorf("%s on %s: %w", cmd.name, name, ErrNotAllowed)
+	}
 	c.mu.Lock()
 	client := c.client
 	c.mu.Unlock()
@@ -180,16 +206,35 @@ func (p *Pool) Run(ctx context.Context, name string, cmd Command) ([]byte, error
 		return nil, ErrNotConnected
 	}
 
-	sess, err := client.NewSession()
-	if err != nil {
-		return nil, fmt.Errorf("%s: new session: %w", cmd.name, err)
+	ctx, cancel := context.WithTimeout(ctx, p.opts.CommandTimeout)
+	defer cancel()
+
+	// NewSession waits for CHANNEL_OPEN with no deadline of its own: a
+	// hostile server could stall it forever. Bound it by the command timeout.
+	type opened struct {
+		sess *ssh.Session
+		err  error
+	}
+	openCh := make(chan opened, 1)
+	go func() {
+		s, err := client.NewSession()
+		openCh <- opened{s, err}
+	}()
+	var sess *ssh.Session
+	select {
+	case o := <-openCh:
+		if o.err != nil {
+			return nil, fmt.Errorf("%s: new session: %w", cmd.name, o.err)
+		}
+		sess = o.sess
+	case <-ctx.Done():
+		_ = client.Close() // unblocks NewSession; the loop will redial
+		return nil, fmt.Errorf("%s: open session: %w", cmd.name, ctx.Err())
 	}
 	defer sess.Close()
 	out := &cappedBuffer{max: p.opts.MaxOutput}
 	sess.Stdout = out
 
-	ctx, cancel := context.WithTimeout(ctx, p.opts.CommandTimeout)
-	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- sess.Run(cmd.line) }()
 	select {
@@ -237,6 +282,10 @@ func (p *Pool) loop(ctx context.Context, c *conn) {
 		}
 
 		backoff = p.opts.MinBackoff
+		select { // drop a reconnect requested while we were dialing
+		case <-c.kick:
+		default:
+		}
 		now := time.Now()
 		c.mu.Lock()
 		c.client = client
