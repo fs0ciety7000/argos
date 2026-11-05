@@ -18,7 +18,7 @@ func newHandler(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(logger, a)
+	return New(logger, a, nil)
 }
 
 func TestHealth(t *testing.T) {

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/fs0ciety7000/argos/internal/auth"
+	"github.com/fs0ciety7000/argos/internal/cfaccess"
 	"github.com/fs0ciety7000/argos/internal/server"
 )
 
@@ -85,9 +86,14 @@ func serve() error {
 		return fmt.Errorf("auth config: %w", err)
 	}
 
+	edge, err := accessMiddleware(logger)
+	if err != nil {
+		return fmt.Errorf("cloudflare access config: %w", err)
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(logger, authSvc),
+		Handler:           server.New(logger, authSvc, edge),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -114,4 +120,24 @@ func serve() error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// accessMiddleware enables Cloudflare Access JWT verification when both
+// ARGOS_CF_ACCESS_TEAM_DOMAIN and ARGOS_CF_ACCESS_AUD are set. /health stays
+// open for the container health check.
+func accessMiddleware(logger *slog.Logger) (server.Middleware, error) {
+	team, aud := os.Getenv("ARGOS_CF_ACCESS_TEAM_DOMAIN"), os.Getenv("ARGOS_CF_ACCESS_AUD")
+	switch {
+	case team == "" && aud == "":
+		logger.Warn("cloudflare access verification disabled: requests reaching the origin directly are not filtered")
+		return nil, nil
+	case team == "" || aud == "":
+		return nil, errors.New("set both ARGOS_CF_ACCESS_TEAM_DOMAIN and ARGOS_CF_ACCESS_AUD, or neither")
+	}
+	v, err := cfaccess.New(team, aud)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("cloudflare access verification enabled", "team", team)
+	return v.Middleware(logger, "/health"), nil
 }

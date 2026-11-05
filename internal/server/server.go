@@ -17,7 +17,12 @@ const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 
 	"base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
 // New returns the root HTTP handler.
-func New(logger *slog.Logger, a *auth.Service) http.Handler {
+// Middleware wraps a handler (e.g. the Cloudflare Access check).
+type Middleware func(http.Handler) http.Handler
+
+// New returns the root HTTP handler. edge, if non-nil, runs before
+// everything else except security headers (Cloudflare Access verification).
+func New(logger *slog.Logger, a *auth.Service, edge Middleware) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -42,7 +47,11 @@ func New(logger *slog.Logger, a *auth.Service) http.Handler {
 		mux.Handle("/", readOnly(http.FileServerFS(dist)))
 	}
 
-	return securityHeaders(auth.SameOrigin(mux))
+	var h http.Handler = auth.SameOrigin(mux)
+	if edge != nil {
+		h = edge(h)
+	}
+	return securityHeaders(h)
 }
 
 // readOnly allows only GET and HEAD. "/" cannot carry a method in its
