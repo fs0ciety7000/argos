@@ -2,6 +2,18 @@
   import { auth } from '../auth.svelte'
   import Logo from './Logo.svelte'
   import Hosts from './Hosts.svelte'
+  import Overview from './Overview.svelte'
+  import { onMount } from 'svelte'
+  import { live } from '../live.svelte'
+
+  onMount(() => {
+    live.start()
+    return () => live.stop()
+  })
+
+  let liveLabel = $derived(
+    live.state === 'open' ? 'LIVE' : live.state === 'connecting' ? 'connexion…' : 'hors ligne',
+  )
 
   const sections = ['Vue d’ensemble', 'Hôtes', 'Conteneurs', 'Journaux', 'Stockage']
   let current = $state(sections[0])
@@ -42,13 +54,16 @@
     </nav>
 
     <div class="meta">
+      <span class="mono live" data-state={live.state}><i aria-hidden="true"></i>{liveLabel}</span>
       <span class="mono session">session · {expires}</span>
       <button type="button" class="ghost" onclick={logout} disabled={leaving}>Se déconnecter</button>
     </div>
   </header>
 
   <main>
-    {#if current === 'Hôtes'}
+    {#if current === 'Vue d’ensemble'}
+      <Overview />
+    {:else if current === 'Hôtes'}
       <Hosts />
     {:else}
       <section class="empty">
@@ -126,6 +141,46 @@
   .session {
     font-size: 12px;
     color: var(--text-2);
+  }
+
+  .live {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-2);
+  }
+
+  .live i {
+    position: relative;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--unknown);
+  }
+
+  .live[data-state='open'] {
+    color: var(--text);
+  }
+
+  .live[data-state='open'] i {
+    background: var(--accent);
+  }
+
+  .live[data-state='open'] i::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    animation: ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+  }
+
+  @keyframes ping {
+    to {
+      transform: scale(3.2);
+      opacity: 0;
+    }
   }
 
   .ghost {

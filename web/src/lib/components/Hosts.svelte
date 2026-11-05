@@ -13,9 +13,13 @@
     type PublicKey,
   } from '../hosts'
 
+  import { live } from '../live.svelte'
+
   const POLL_MS = 5000
 
-  let hosts = $state.raw<HostStatus[] | null>(null)
+  // Live WebSocket first; REST polling only while the socket is down.
+  let polled = $state.raw<HostStatus[] | null>(null)
+  let hosts = $derived(live.state === 'open' && live.hosts ? live.hosts : (polled ?? live.hosts))
   let key = $state.raw<PublicKey | null>(null)
   let loadError = $state<string | null>(null)
   let now = $state(Date.now())
@@ -24,7 +28,7 @@
 
   async function refresh() {
     try {
-      hosts = await listHosts()
+      polled = await listHosts()
       loadError = null
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -40,7 +44,9 @@
     getPublicKey()
       .then((k) => (key = k))
       .catch(() => {})
-    const poll = setInterval(refresh, POLL_MS)
+    const poll = setInterval(() => {
+      if (live.state !== 'open') refresh()
+    }, POLL_MS)
     const tick = setInterval(() => (now = Date.now()), 1000)
     return () => {
       clearInterval(poll)
@@ -55,7 +61,7 @@
     notice = null
     try {
       await reconnectHost(name)
-      setTimeout(refresh, 800)
+      if (live.state !== 'open') setTimeout(refresh, 800)
     } catch (err) {
       notice =
         err instanceof ApiError && err.status === 429
