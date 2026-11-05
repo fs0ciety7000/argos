@@ -8,6 +8,10 @@ import (
 // FailureLimiter blocks logins after too many failures within a sliding
 // window. It is global on purpose: behind proxies the client IP is easy to
 // spoof, and there is only one account to protect.
+//
+// Each attempt reserves a slot up front (counted as a failure) and a
+// success clears all slots. Reserving before the expensive password check
+// means concurrent requests cannot slip past the limit.
 type FailureLimiter struct {
 	max    int
 	window time.Duration
@@ -17,34 +21,26 @@ type FailureLimiter struct {
 	failures []time.Time
 }
 
-// NewFailureLimiter allows at most max failures per window.
+// NewFailureLimiter allows at most max failed attempts per window.
 func NewFailureLimiter(max int, window time.Duration) *FailureLimiter {
 	return &FailureLimiter{max: max, window: window, now: time.Now}
 }
 
-// Allow reports whether a login attempt may proceed and, if not, how long
-// until the oldest failure leaves the window.
-func (l *FailureLimiter) Allow() (bool, time.Duration) {
+// Reserve records an attempt if the budget allows it. When it does not,
+// it returns false and how long until the oldest attempt leaves the window.
+func (l *FailureLimiter) Reserve() (bool, time.Duration) {
 	now := l.now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.pruneLocked(now)
-	if len(l.failures) < l.max {
-		return true, 0
+	if len(l.failures) >= l.max {
+		return false, l.failures[0].Add(l.window).Sub(now)
 	}
-	return false, l.failures[0].Add(l.window).Sub(now)
-}
-
-// Fail records a failed attempt.
-func (l *FailureLimiter) Fail() {
-	now := l.now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.pruneLocked(now)
 	l.failures = append(l.failures, now)
+	return true, 0
 }
 
-// Reset clears recorded failures after a successful login.
+// Reset clears recorded attempts after a successful login.
 func (l *FailureLimiter) Reset() {
 	l.mu.Lock()
 	l.failures = l.failures[:0]

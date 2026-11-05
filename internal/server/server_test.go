@@ -31,7 +31,7 @@ func TestHealth(t *testing.T) {
 	if got, want := rec.Body.String(), `{"status":"ok"}`; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
-	for _, h := range []string{"Content-Security-Policy", "X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options"} {
+	for _, h := range []string{"Content-Security-Policy", "X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options", "Strict-Transport-Security"} {
 		if rec.Header().Get(h) == "" {
 			t.Errorf("missing security header %s", h)
 		}
@@ -47,8 +47,8 @@ func TestAPIRequiresSession(t *testing.T) {
 }
 
 func TestLoginDisabledWithoutConfig(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "http://argos.test/api/auth/login", strings.NewReader(`{}`))
-	req.Header.Set("Origin", "http://argos.test")
+	req := httptest.NewRequest(http.MethodPost, "https://argos.test/api/auth/login", strings.NewReader(`{}`))
+	req.Header.Set("Origin", "https://argos.test")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	newHandler(t).ServeHTTP(rec, req)

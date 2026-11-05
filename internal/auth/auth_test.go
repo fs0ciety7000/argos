@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -118,6 +119,9 @@ func TestPasswordHash(t *testing.T) {
 		"$argon2i$v=19$m=1024,t=1,p=1$c2FsdHNhbHRzYWx0c2FsdA$a2V5",
 		strings.Replace(phc, "m=1024", "m=99999999", 1),
 		strings.Replace(phc, "t=1", "t=0", 1),
+		strings.Replace(phc, "p=1", "p=1junk", 1),
+		strings.Replace(phc, "p=1", "p=64", 1),
+		strings.Replace(phc, "v=19", "v=19x", 1),
 	}
 	for _, b := range bad {
 		if _, err := ParsePasswordHash(b); err == nil {
@@ -187,24 +191,24 @@ func TestFailureLimiter(t *testing.T) {
 	l := NewFailureLimiter(3, time.Minute)
 	l.now = func() time.Time { return now }
 	for range 3 {
-		if ok, _ := l.Allow(); !ok {
+		if ok, _ := l.Reserve(); !ok {
 			t.Fatal("blocked too early")
 		}
-		l.Fail()
 		now = now.Add(time.Second)
 	}
-	ok, retry := l.Allow()
+	ok, retry := l.Reserve()
 	if ok || retry <= 0 || retry > time.Minute {
 		t.Fatalf("expected block with retry in (0,1m], got ok=%v retry=%v", ok, retry)
 	}
 	now = now.Add(time.Minute)
-	if ok, _ := l.Allow(); !ok {
+	if ok, _ := l.Reserve(); !ok {
 		t.Fatal("window should have slid")
 	}
-	l.Fail()
 	l.Reset()
-	if ok, _ := l.Allow(); !ok {
-		t.Fatal("reset should clear failures")
+	for range 3 {
+		if ok, _ := l.Reserve(); !ok {
+			t.Fatal("reset should clear attempts")
+		}
 	}
 }
 
@@ -243,12 +247,12 @@ func newHarness(t *testing.T) *harness {
 }
 
 func (hs *harness) do(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, "http://argos.test"+path, strings.NewReader(body))
+	req := httptest.NewRequest(method, "https://argos.test"+path, strings.NewReader(body))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if method != http.MethodGet {
-		req.Header.Set("Origin", "http://argos.test")
+		req.Header.Set("Origin", "https://argos.test")
 	}
 	if cookie != nil {
 		req.AddCookie(cookie)
@@ -330,8 +334,8 @@ func TestLoginRateLimited(t *testing.T) {
 
 func TestLoginInputValidation(t *testing.T) {
 	hs := newHarness(t)
-	req := httptest.NewRequest(http.MethodPost, "http://argos.test/api/auth/login", strings.NewReader(`password=x`))
-	req.Header.Set("Origin", "http://argos.test")
+	req := httptest.NewRequest(http.MethodPost, "https://argos.test/api/auth/login", strings.NewReader(`password=x`))
+	req.Header.Set("Origin", "https://argos.test")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	hs.h.ServeHTTP(rec, req)
@@ -349,8 +353,8 @@ func TestLoginInputValidation(t *testing.T) {
 
 func TestSameOrigin(t *testing.T) {
 	hs := newHarness(t)
-	for _, origin := range []string{"", "https://evil.test", "null"} {
-		req := httptest.NewRequest(http.MethodPost, "http://argos.test/api/auth/logout", nil)
+	for _, origin := range []string{"", "https://evil.test", "null", "http://argos.test", "https://argos.test.evil.test", "https://argos.test/x"} {
+		req := httptest.NewRequest(http.MethodPost, "https://argos.test/api/auth/logout", nil)
 		if origin != "" {
 			req.Header.Set("Origin", origin)
 		}
@@ -383,5 +387,41 @@ func TestNewConfig(t *testing.T) {
 		if _, err := New(cfg, logger); err == nil {
 			t.Errorf("config %+v should be rejected", cfg)
 		}
+	}
+}
+
+func TestLoginRateLimitHoldsUnderConcurrency(t *testing.T) {
+	hs := newHarness(t)
+	const n = 40
+	codes := make([]int, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes[i] = hs.do(http.MethodPost, "/api/auth/login", `{"password":"x","code":"000000"}`, nil).Code
+		}()
+	}
+	wg.Wait()
+	evaluated := 0
+	for _, c := range codes {
+		switch c {
+		case http.StatusUnauthorized:
+			evaluated++
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("unexpected status %d", c)
+		}
+	}
+	if evaluated > maxFailures {
+		t.Fatalf("%d passwords evaluated concurrently, limit is %d", evaluated, maxFailures)
+	}
+}
+
+func TestValidOriginLoopbackHTTP(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://localhost:5173/api/auth/logout", nil)
+	req.Header.Set("Origin", "http://localhost:5173")
+	if !ValidOrigin(req) {
+		t.Fatal("http on localhost should be allowed for dev")
 	}
 }

@@ -26,7 +26,8 @@ const (
 	maxFailures   = 10
 	failureWindow = 15 * time.Minute
 	maxLoginBody  = 4 << 10
-	accountName   = "admin"
+	// Concurrent argon2id verifications (~64 MiB each).
+	maxConcurrentHashes = 2
 )
 
 // Config holds the secrets read from the environment.
@@ -42,6 +43,8 @@ type Service struct {
 	totp     *TOTP
 	sessions *Sessions
 	limiter  *FailureLimiter
+	// hashSlots is a semaphore bounding concurrent password hashes.
+	hashSlots chan struct{}
 }
 
 // New builds the service. With no credentials at all, login is disabled
@@ -49,9 +52,10 @@ type Service struct {
 // A partial or malformed configuration is an error.
 func New(cfg Config, logger *slog.Logger) (*Service, error) {
 	s := &Service{
-		logger:   logger,
-		sessions: NewSessions(sessionTTL, sessionIdle),
-		limiter:  NewFailureLimiter(maxFailures, failureWindow),
+		logger:    logger,
+		sessions:  NewSessions(sessionTTL, sessionIdle),
+		limiter:   NewFailureLimiter(maxFailures, failureWindow),
+		hashSlots: make(chan struct{}, maxConcurrentHashes),
 	}
 	switch {
 	case cfg.PasswordHash == "" && cfg.TOTPSecret == "":
@@ -98,12 +102,6 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnsupportedMediaType, "expected application/json")
 		return
 	}
-	if ok, retry := s.limiter.Allow(); !ok {
-		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retry.Seconds()))))
-		writeError(w, http.StatusTooManyRequests, "too many failed attempts")
-		return
-	}
-
 	var req loginRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxLoginBody))
 	dec.DisallowUnknownFields()
@@ -112,11 +110,29 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reserve a failure slot BEFORE hashing, so concurrent requests cannot
+	// all pass the check while the first hash is still running. A success
+	// clears the slots.
+	if ok, retry := s.limiter.Reserve(); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(retry.Seconds()))))
+		writeError(w, http.StatusTooManyRequests, "too many failed attempts")
+		return
+	}
+	// Each argon2id hash allocates ~64 MiB: cap concurrent hashes so a burst
+	// of logins cannot exhaust memory.
+	select {
+	case s.hashSlots <- struct{}{}:
+		defer func() { <-s.hashSlots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusTooManyRequests, "login busy")
+		return
+	}
+
 	// Always run the expensive password check; only consume a TOTP step
 	// when the password is right, so a wrong guess cannot burn the code.
 	if !s.password.Verify(req.Password) || !s.totp.Verify(req.Code) {
-		s.limiter.Fail()
-		s.logger.Warn("login failed", "remote", r.RemoteAddr)
+		s.logger.Warn("login failed", clientAttrs(r)...)
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -128,7 +144,7 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.limiter.Reset()
-	s.logger.Info("login succeeded", "remote", r.RemoteAddr)
+	s.logger.Info("login succeeded", clientAttrs(r)...)
 	http.SetCookie(w, &http.Cookie{
 		Name:     CookieName,
 		Value:    token,
@@ -189,8 +205,11 @@ func (s *Service) validate(r *http.Request) (time.Time, bool) {
 }
 
 // SameOrigin rejects state-changing requests whose Origin header is missing
-// or does not match the request host (CSRF defence in depth on top of
-// SameSite=Strict). Safe methods pass through.
+// or is not https://<request host> (CSRF defence in depth on top of
+// SameSite=Strict, which still lets sibling *.fs0ciety.org sites send the
+// cookie). Plain http is only accepted for loopback hosts (local dev).
+// Safe methods pass through: no GET handler may change state, and the
+// WebSocket handler must call ValidOrigin itself.
 func SameOrigin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -198,14 +217,42 @@ func SameOrigin(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		origin := r.Header.Get("Origin")
-		u, err := url.Parse(origin)
-		if origin == "" || err != nil || u.Host == "" || u.Host != r.Host {
+		if !ValidOrigin(r) {
 			writeError(w, http.StatusForbidden, "cross-origin request refused")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ValidOrigin reports whether the request's Origin header names this exact
+// host over https (or http on loopback).
+func ValidOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	u, err := url.Parse(origin)
+	if origin == "" || err != nil || u.Host == "" || u.Host != r.Host || u.Path != "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		h := u.Hostname()
+		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	default:
+		return false
+	}
+}
+
+// clientAttrs describes the caller for audit logs. Cf-Connecting-IP is
+// set by Cloudflare but can be forged on direct origin access, so it is
+// logged as a hint only and never used for decisions.
+func clientAttrs(r *http.Request) []any {
+	attrs := []any{"remote", r.RemoteAddr}
+	if ip := r.Header.Get("Cf-Connecting-IP"); ip != "" {
+		attrs = append(attrs, "cf_ip_unverified", ip)
+	}
+	return attrs
 }
 
 func isJSON(r *http.Request) bool {

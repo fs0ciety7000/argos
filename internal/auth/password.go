@@ -26,11 +26,12 @@ var DefaultArgon2Params = Argon2Params{Memory: 64 * 1024, Time: 3, Threads: 2, K
 // Upper bounds on parsed parameters, so a malformed hash in the environment
 // cannot make every login allocate gigabytes or spin for minutes.
 const (
-	maxArgonMemory = 1024 * 1024 // 1 GiB
-	maxArgonTime   = 16
-	minSaltLen     = 16
-	minKeyLen      = 16
-	maxKeyLen      = 64
+	maxArgonMemory  = 1024 * 1024 // 1 GiB
+	maxArgonTime    = 16
+	maxArgonThreads = 16
+	minSaltLen      = 16
+	minKeyLen       = 16
+	maxKeyLen       = 64
 )
 
 var b64 = base64.RawStdEncoding
@@ -63,15 +64,17 @@ func ParsePasswordHash(s string) (*PasswordHash, error) {
 	if len(parts) != 6 || parts[0] != "" || parts[1] != "argon2id" {
 		return nil, errors.New("not an argon2id PHC string")
 	}
-	var version int
-	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil || version != argon2.Version {
+	if parts[2] != fmt.Sprintf("v=%d", argon2.Version) {
 		return nil, fmt.Errorf("unsupported argon2 version %q", parts[2])
 	}
 	var p Argon2Params
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &p.Memory, &p.Time, &p.Threads); err != nil {
+	// Sscanf ignores trailing input; re-render and compare to reject junk.
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &p.Memory, &p.Time, &p.Threads); err != nil ||
+		parts[3] != fmt.Sprintf("m=%d,t=%d,p=%d", p.Memory, p.Time, p.Threads) {
 		return nil, fmt.Errorf("invalid argon2 parameters %q", parts[3])
 	}
-	if p.Memory < 8*uint32(p.Threads) || p.Memory > maxArgonMemory || p.Time < 1 || p.Time > maxArgonTime || p.Threads < 1 {
+	if p.Memory < 8*uint32(p.Threads) || p.Memory > maxArgonMemory || p.Time < 1 || p.Time > maxArgonTime ||
+		p.Threads < 1 || p.Threads > maxArgonThreads {
 		return nil, errors.New("argon2 parameters out of range")
 	}
 	salt, err := b64.DecodeString(parts[4])

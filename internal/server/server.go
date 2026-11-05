@@ -30,6 +30,8 @@ func New(logger *slog.Logger, a *auth.Service) http.Handler {
 	mux.HandleFunc("GET /api/auth/session", a.Session)
 
 	// Every other API route requires a session. Feature handlers register on api.
+	// Rules: no GET handler may change state (SameOrigin only checks unsafe
+	// methods), and a WebSocket upgrade must check auth.ValidOrigin itself.
 	api := http.NewServeMux()
 	mux.Handle("/api/", a.Require(api))
 
@@ -60,6 +62,7 @@ func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Frame-Options", "DENY")
