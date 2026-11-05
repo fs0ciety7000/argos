@@ -280,12 +280,18 @@ func (s *Store) DiskTrends(ctx context.Context, now time.Time) ([]DiskTrend, err
 	rows, err := s.db.QueryContext(ctx, `
 		WITH bounds AS (
 			SELECT host, mount, MIN(ts) AS t0, MAX(ts) AS t1 FROM disks WHERE ts >= ? GROUP BY host, mount
+		), latest AS (
+			SELECT host, MAX(ts) AS t FROM disks WHERE ts >= ? GROUP BY host
 		)
 		SELECT b.host, b.mount, b.t0, b.t1, f.used, l.size, l.used
 		FROM bounds b
 		JOIN disks f ON f.host = b.host AND f.mount = b.mount AND f.ts = b.t0
 		JOIN disks l ON l.host = b.host AND l.mount = b.mount AND l.ts = b.t1
-		ORDER BY b.host, b.mount`, since)
+		JOIN latest x ON x.host = b.host
+		-- Only mounts still reported recently: a mount replaced (df -> quota)
+		-- or unmounted must not linger for 7 days and be counted twice.
+		WHERE b.t1 >= x.t - 600000
+		ORDER BY b.host, b.mount`, since, since)
 	if err != nil {
 		return nil, fmt.Errorf("disk trends: %w", err)
 	}

@@ -143,3 +143,47 @@ func TestParseHostileOutput(t *testing.T) {
 		t.Fatalf("sample does not encode: %v", err)
 	}
 }
+
+func TestParseQuota(t *testing.T) {
+	base := fixture[:strings.Index(fixture, "@@DF")] +
+		"@@DF\nFilesystem 1024-blocks Used Available Capacity Mounted on\n" +
+		"/dev/mapper/mpathe 21483235328 21068951468 414283860 99% /mnt/mpathe\n@@QUOTA\n"
+
+	// Whatbox's own quota tool (real output).
+	r, err := Parse([]byte(base + `{"plan":21700000002048.0,"used":21284396404736.0,"free":415603597312.0,"percent_free":1.0}` + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Disks) != 1 || r.Disks[0] != (Disk{Mount: QuotaMount, Size: 21700000002048, Used: 21284396404736}) {
+		t.Fatalf("whatbox quota: %+v", r.Disks)
+	}
+
+	// Standard quota -w (real itsby / HostingByDesign layout).
+	std := "Disk quotas for user phantomhex (uid 1085):\n" +
+		"     Filesystem  blocks   quota   limit   grace   files   quota   limit   grace\n" +
+		"      /dev/sdaa 2554331136  27344699392 27344699392            150123       0       0\n"
+	r, err = Parse([]byte(base + std))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Disks) != 1 || r.Disks[0].Size != 27344699392*1024 || r.Disks[0].Used != 2554331136*1024 {
+		t.Fatalf("std quota: %+v", r.Disks)
+	}
+
+	// Over quota: '*' marker; soft 0 falls back to hard limit.
+	r, _ = Parse([]byte(base + "/dev/sdb 1200* 0 1000 6days 5 0 0\n"))
+	if r.Disks[0].Size != 1000*1024 || r.Disks[0].Used != 1000*1024 {
+		t.Fatalf("over quota: %+v", r.Disks)
+	}
+
+	// No usable quota: df stays.
+	for _, bad := range []string{
+		"", "/dev/sdb 10 0 0 0 0 0\n", `{"plan":"NaN","used":1}` + "\n", `{"plan":10,"used":20}` + "\n",
+		`{"plan":1e400,"used":1}` + "\n", "quota: error: not allowed\n",
+	} {
+		r, err := Parse([]byte(base + bad))
+		if err != nil || len(r.Disks) != 1 || r.Disks[0].Mount != "/mnt/mpathe" {
+			t.Errorf("%q: disks = %+v, err = %v (df must stay)", bad, r.Disks, err)
+		}
+	}
+}

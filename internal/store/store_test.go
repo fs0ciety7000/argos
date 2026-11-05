@@ -151,3 +151,21 @@ func TestActionsJournal(t *testing.T) {
 		t.Fatal("old actions not purged")
 	}
 }
+
+func TestDiskTrendsDropsStaleMounts(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	base := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
+	old := collector.Sample{Host: "box", TS: base, MemTotal: 1, Disks: []collector.Disk{{Mount: "/mnt/shared", Size: 100, Used: 99}}}
+	cur := collector.Sample{Host: "box", TS: base.Add(time.Hour), MemTotal: 1, Disks: []collector.Disk{{Mount: "quota", Size: 50, Used: 10}}}
+	if err := s.Insert(ctx, old, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Insert(ctx, cur, true); err != nil {
+		t.Fatal(err)
+	}
+	trends, err := s.DiskTrends(ctx, base.Add(time.Hour))
+	if err != nil || len(trends) != 1 || trends[0].Mount != "quota" {
+		t.Fatalf("trends = %+v, %v (stale mount must be dropped)", trends, err)
+	}
+}

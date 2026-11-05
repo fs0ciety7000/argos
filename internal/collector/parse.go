@@ -5,6 +5,7 @@ package collector
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -23,7 +24,13 @@ type Raw struct {
 	Load1             float64
 	Net               map[string]NetCounters
 	Disks             []Disk
+	// Quota is the account's real storage quota on a seedbox, when the
+	// host reports one. It replaces Disks (df shows the shared disk).
+	Quota *Disk
 }
+
+// QuotaMount is the mount name used for quota-based readings.
+const QuotaMount = "quota"
 
 // NetCounters are cumulative interface byte counters.
 type NetCounters struct{ Rx, Tx uint64 }
@@ -76,6 +83,8 @@ func ParseLimit(out []byte, diskCap int) (Raw, error) {
 			r.parseNet(line)
 		case "DF":
 			r.parseDF(line, min(diskCap, maxDisks))
+		case "QUOTA":
+			r.parseQuota(line)
 		}
 		if err != nil {
 			return Raw{}, fmt.Errorf("%s: %w", strings.ToLower(section), err)
@@ -92,7 +101,60 @@ func ParseLimit(out []byte, diskCap int) (Raw, error) {
 	if r.CPUTotal == 0 || r.MemTotal == 0 {
 		return Raw{}, errors.New("incomplete cpu or memory data")
 	}
+	if r.Quota != nil {
+		r.Disks = []Disk{*r.Quota}
+	}
 	return r, nil
+}
+
+// parseQuota understands two formats, first match wins:
+//   - Whatbox: {"plan":21700000002048.0,"used":21284396404736.0,"free":...} (bytes)
+//   - quota -w: "/dev/sdaa  2554  27344  27344  ...  files quota limit grace" (KiB)
+func (r *Raw) parseQuota(line string) {
+	if r.Quota != nil {
+		return
+	}
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "{") {
+		var q struct {
+			Plan *float64 `json:"plan"`
+			Used *float64 `json:"used"`
+		}
+		if json.Unmarshal([]byte(line), &q) != nil || q.Plan == nil || q.Used == nil {
+			return
+		}
+		size, ok1 := bytesValue(*q.Plan)
+		used, ok2 := bytesValue(*q.Used)
+		if ok1 && ok2 && size > 0 && used <= size {
+			r.Quota = &Disk{Mount: QuotaMount, Size: size, Used: used}
+		}
+		return
+	}
+	f := strings.Fields(line)
+	if len(f) < 4 || !strings.HasPrefix(f[0], "/") {
+		return // banner, header or a wrapped device line
+	}
+	used, err1 := strconv.ParseUint(strings.TrimSuffix(f[1], "*"), 10, 64)
+	soft, err2 := strconv.ParseUint(f[2], 10, 64)
+	hard, err3 := strconv.ParseUint(f[3], 10, 64)
+	if err1 != nil || err2 != nil || err3 != nil || used > maxKiB || soft > maxKiB || hard > maxKiB {
+		return
+	}
+	limit := soft
+	if limit == 0 {
+		limit = hard
+	}
+	if limit == 0 {
+		return // no quota on this filesystem
+	}
+	r.Quota = &Disk{Mount: QuotaMount, Size: limit * 1024, Used: min(used, limit) * 1024}
+}
+
+func bytesValue(v float64) (uint64, bool) {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > math.MaxInt64 {
+		return 0, false
+	}
+	return uint64(v), true
 }
 
 // "cpu  user nice system idle iowait irq softirq steal guest guest_nice"

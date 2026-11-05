@@ -86,7 +86,7 @@
         <span>Disque</span><span
           class="v"
           data-tone={fillTone(diskRatio)}
-          title={disk ? `${disk.mount} : ${bytes(disk.used)} / ${bytes(disk.size)}` : undefined}
+          title={disk ? `${disk.mount === 'quota' ? 'quota du compte' : disk.mount} : ${bytes(disk.used)} / ${bytes(disk.size)}` : undefined}
           >{disk ? `${pct(diskRatio * 100)} %` : '—'}</span
         >
       </div>

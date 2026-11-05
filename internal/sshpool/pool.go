@@ -75,8 +75,11 @@ var (
 		"-x nfs -x nfs4 -x cifs -x smb3 -x fuse.rclone -x fuse.sshfs 2>/dev/null; true"}
 	// CmdMetricsSeedbox is the same, but df only covers $HOME: a shared box
 	// lists dozens of unrelated mounts.
+	// The QUOTA section tries Whatbox's own tool (JSON, bytes) then the
+	// standard quota(1) (KiB blocks); df stays the fallback.
 	CmdMetricsSeedbox = Command{name: "metrics", line: metricsPrefix +
-		`echo @@DF; timeout 8 df -kP "$HOME" 2>/dev/null; true`}
+		`echo @@DF; timeout 8 df -kP "$HOME" 2>/dev/null; ` +
+		`echo @@QUOTA; timeout 8 quota --raw --units b 2>/dev/null || timeout 8 quota -w 2>/dev/null; true`}
 )
 
 // Docker commands go through the root-owned guard script installed on the

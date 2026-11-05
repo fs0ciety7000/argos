@@ -42,7 +42,7 @@
         <li>
           <div class="mono row">
             <span class="name" title={r.mount}><span data-tone={r.tone} class="g">{glyph[r.tone]}</span> {r.host}
-              <span class="mount">{r.mount}</span></span>
+              <span class="mount">{r.mount === 'quota' ? 'quota du compte' : r.mount}</span></span>
             <span data-tone={r.tone} class="p">{pct(r.ratio * 100)} %</span>
           </div>
           <div class="track" role="img" aria-label="{r.host} {r.mount} : {pct(r.ratio * 100)} % utilisé">
