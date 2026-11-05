@@ -4,6 +4,8 @@
   import Hosts from './Hosts.svelte'
   import Overview from './Overview.svelte'
   import Containers from './Containers.svelte'
+  import Logs from './Logs.svelte'
+  import { nav, SECTIONS } from '../nav.svelte'
   import { onMount } from 'svelte'
   import { live } from '../live.svelte'
 
@@ -16,8 +18,6 @@
     live.state === 'open' ? 'LIVE' : live.state === 'connecting' ? 'connexion…' : 'hors ligne',
   )
 
-  const sections = ['Vue d’ensemble', 'Hôtes', 'Conteneurs', 'Journaux', 'Stockage']
-  let current = $state(sections[0])
   let leaving = $state(false)
 
   let expires = $derived(
@@ -42,13 +42,13 @@
     </div>
 
     <nav aria-label="Sections">
-      {#each sections as s (s)}
+      {#each SECTIONS as s (s)}
         <a
           href="#{s}"
-          aria-current={current === s ? 'page' : undefined}
+          aria-current={nav.section === s ? 'page' : undefined}
           onclick={(e) => {
             e.preventDefault()
-            current = s
+            nav.section = s
           }}>{s}</a
         >
       {/each}
@@ -62,15 +62,17 @@
   </header>
 
   <main>
-    {#if current === 'Vue d’ensemble'}
+    {#if nav.section === 'Vue d’ensemble'}
       <Overview />
-    {:else if current === 'Hôtes'}
+    {:else if nav.section === 'Hôtes'}
       <Hosts />
-    {:else if current === 'Conteneurs'}
+    {:else if nav.section === 'Conteneurs'}
       <Containers />
+    {:else if nav.section === 'Journaux'}
+      <Logs />
     {:else}
       <section class="empty">
-        <p class="mono kicker">{current}</p>
+        <p class="mono kicker">{nav.section}</p>
         <h2>Bientôt ici.</h2>
         <p>Les métriques et le flux temps réel arrivent dans une prochaine étape. Les hôtes sont déjà dans « Hôtes ».</p>
       </section>

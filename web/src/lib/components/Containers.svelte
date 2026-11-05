@@ -6,6 +6,7 @@
   import { live } from '../live.svelte'
   import { listActions, restartContainer, type Action, type Container } from '../containers'
   import { bytes, pct } from '../format'
+  import { nav } from '../nav.svelte'
 
   let filter = $state('')
   let onlyIssues = $state(false)
@@ -176,6 +177,9 @@
                     <td class="mono num hide-sm">{c.mem !== undefined ? bytes(c.mem) : '—'}</td>
                     <td class="mono num hide-sm dim">{c.restartCount}</td>
                     <td class="act">
+                      <button type="button" class="ghost-sm" onclick={() => nav.openLogs(hc.host, c.name)} aria-label="Journaux de {c.name}">
+                        Logs
+                      </button>
                       {#if !c.protected}
                         <button
                           type="button"
@@ -454,6 +458,11 @@
   button:disabled {
     opacity: 0.5;
     cursor: progress;
+  }
+
+  .ghost-sm {
+    background: none;
+    margin-right: 6px;
   }
 
   button.primary {
