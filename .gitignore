@@ -32,5 +32,6 @@ target/
 
 # Argos
 bin/
+!web/dist/
 web/dist/*
 !web/dist/.gitkeep
