@@ -220,6 +220,7 @@ func (m *Manager) refreshList(ctx context.Context, host string) {
 		v := m.copyView(host)
 		m.mu.Unlock()
 		if changed {
+			m.logger.Warn("docker list failed", "host", host, "err", err)
 			m.publish(v)
 		}
 		return
@@ -228,6 +229,9 @@ func (m *Manager) refreshList(ctx context.Context, host string) {
 	now := time.Now()
 	m.mu.Lock()
 	st := m.state[host]
+	if st.view.UpdatedAt == nil || st.view.Error != "" {
+		m.logger.Info("docker containers listed", "host", host, "containers", len(list))
+	}
 	for i := range list {
 		c := &list[i]
 		c.Protected = m.isProtected(c)
