@@ -29,7 +29,8 @@ Générer les valeurs (dans ton terminal, jamais dans le chat) :
 
 ```bash
 go run ./cmd/argos hash-password   # demande le mot de passe deux fois, sans l'afficher
-go run ./cmd/argos totp-init   # scanne l'URI otpauth:// dans ton appli d'authentification
+go run ./cmd/argos totp-init   # affiche un QR code à scanner + la valeur pour Coolify
+go run ./cmd/argos totp-code   # vérifie : affiche le code attendu pour un secret donné
 ```
 
 Sessions en mémoire : un redéploiement déconnecte.

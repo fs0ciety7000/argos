@@ -112,3 +112,17 @@ func TOTPURI(secret, account string) string {
 	v.Set("period", fmt.Sprint(int(totpPeriod/time.Second)))
 	return "otpauth://totp/" + url.PathEscape("Argos:"+account) + "?" + v.Encode()
 }
+
+// CurrentCode returns the code an authenticator app should show right now
+// for secret, and how long it stays valid. Used by the `argos totp-code`
+// diagnostic command.
+func CurrentCode(secret string, now time.Time) (string, time.Duration, error) {
+	t, err := NewTOTP(secret)
+	if err != nil {
+		return "", 0, err
+	}
+	period := int64(totpPeriod / time.Second)
+	step := now.Unix() / period
+	left := time.Duration(period-now.Unix()%period) * time.Second
+	return hotp(t.key, uint64(step), totpDigits), left, nil
+}

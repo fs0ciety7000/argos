@@ -5,7 +5,8 @@
 //
 //	argos                  start the server
 //	argos hash-password    read a password on stdin, print its argon2id hash
-//	argos totp-init        print a new TOTP secret and its otpauth:// URI
+//	argos totp-init        print a new TOTP secret, its otpauth:// URI and a QR code
+//	argos totp-code        read a TOTP secret, print the code expected right now
 package main
 
 import (
@@ -63,10 +64,27 @@ func runCommand(name string, in io.Reader, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(out, "ARGOS_TOTP_SECRET=%s\n%s\n", secret, auth.TOTPURI(secret, "admin"))
+		uri := auth.TOTPURI(secret, "admin")
+		fmt.Fprintln(out, "Scanne ce QR code avec ton application d'authentification :")
+		fmt.Fprintln(out)
+		if err := printQR(out, uri); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(out, "\nURI : %s\n\nValeur à mettre dans Coolify (ARGOS_TOTP_SECRET) :\n%s\n", uri, secret)
+		return err
+	case "totp-code":
+		secret, err := readSecret(in, "Secret TOTP : ")
+		if err != nil {
+			return err
+		}
+		code, left, err := auth.CurrentCode(secret, time.Now())
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(out, "Code attendu maintenant : %s (encore %d s)\n", code, int(left.Seconds()))
 		return err
 	default:
-		return fmt.Errorf("unknown command %q (want hash-password or totp-init)", name)
+		return fmt.Errorf("unknown command %q (want hash-password, totp-init or totp-code)", name)
 	}
 }
 
@@ -97,6 +115,24 @@ func readPassword(in io.Reader) (string, error) {
 		return "", fmt.Errorf("read password: %w", err)
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// readSecret reads one value with echo off on a terminal, or one line otherwise.
+func readSecret(in io.Reader, prompt string) (string, error) {
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		fmt.Fprint(os.Stderr, prompt)
+		b, err := term.ReadPassword(int(f.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", fmt.Errorf("read secret: %w", err)
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read secret: %w", err)
+	}
+	return strings.TrimSpace(line), nil
 }
 
 func serve() error {

@@ -425,3 +425,17 @@ func TestValidOriginLoopbackHTTP(t *testing.T) {
 		t.Fatal("http on localhost should be allowed for dev")
 	}
 }
+
+func TestCurrentCode(t *testing.T) {
+	now := time.Unix(1_700_000_005, 0)
+	code, left, err := CurrentCode(base32.StdEncoding.EncodeToString(rfcKey), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := hotp(rfcKey, uint64(now.Unix()/30), 6); code != want {
+		t.Fatalf("code = %s, want %s", code, want)
+	}
+	if left != 25*time.Second {
+		t.Fatalf("left = %v, want 25s", left)
+	}
+}
