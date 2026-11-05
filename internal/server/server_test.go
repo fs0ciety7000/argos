@@ -19,7 +19,7 @@ func newHandler(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(logger, a, nil, Hosts{Pool: fakePool{}})
+	return New(logger, a, nil, Hosts{Pool: fakePool{}}, &Metrics{Store: nil, Known: func(string) bool { return true }})
 }
 
 func TestHealth(t *testing.T) {
@@ -64,7 +64,7 @@ func (fakePool) Statuses() []sshpool.Status { return nil }
 func (fakePool) Reconnect(string) error     { return nil }
 
 func TestHostsAPIRequiresSession(t *testing.T) {
-	for _, path := range []string{"/api/hosts", "/api/ssh/public-key"} {
+	for _, path := range []string{"/api/hosts", "/api/ssh/public-key", "/api/metrics?host=a&range=1h", "/api/throughput?range=1h", "/api/storage"} {
 		rec := httptest.NewRecorder()
 		newHandler(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusUnauthorized {

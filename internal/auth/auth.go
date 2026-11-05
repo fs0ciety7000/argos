@@ -206,6 +206,15 @@ func (s *Service) Require(next http.Handler) http.Handler {
 	})
 }
 
+// Valid reports whether r carries a live session (used by long-lived
+// WebSocket connections to end when their session does). Like any
+// authenticated request it refreshes the idle timer; the absolute TTL
+// still applies.
+func (s *Service) Valid(r *http.Request) bool {
+	_, ok := s.validate(r)
+	return ok
+}
+
 func (s *Service) validate(r *http.Request) (time.Time, bool) {
 	c, err := r.Cookie(CookieName)
 	if err != nil {

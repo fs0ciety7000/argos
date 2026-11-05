@@ -58,7 +58,20 @@ var (
 	CmdUname   = Command{name: "uname", line: "uname -srm"}
 	CmdUptime  = Command{name: "uptime", line: "cat /proc/uptime /proc/loadavg"}
 	CmdMeminfo = Command{name: "meminfo", line: "cat /proc/meminfo"}
+
+	// CmdMetricsVPS reads every metric in one session. Sections are framed
+	// by fixed markers; df skips pseudo filesystems and is bounded by
+	// timeout so a hung mount cannot stall the session.
+	CmdMetricsVPS = Command{name: "metrics", line: metricsPrefix +
+		"echo @@DF; timeout 8 df -kP -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs 2>/dev/null; true"}
+	// CmdMetricsSeedbox is the same, but df only covers $HOME: a shared box
+	// lists dozens of unrelated mounts.
+	CmdMetricsSeedbox = Command{name: "metrics", line: metricsPrefix +
+		`echo @@DF; timeout 8 df -kP "$HOME" 2>/dev/null; true`}
 )
+
+const metricsPrefix = "echo @@STAT; cat /proc/stat; echo @@MEM; cat /proc/meminfo; " +
+	"echo @@LOAD; cat /proc/loadavg; echo @@NET; cat /proc/net/dev; "
 
 // Options tune timings; zero values get production defaults.
 type Options struct {

@@ -26,9 +26,12 @@ import (
 
 	"github.com/fs0ciety7000/argos/internal/auth"
 	"github.com/fs0ciety7000/argos/internal/cfaccess"
+	"github.com/fs0ciety7000/argos/internal/collector"
 	"github.com/fs0ciety7000/argos/internal/inventory"
+	"github.com/fs0ciety7000/argos/internal/live"
 	"github.com/fs0ciety7000/argos/internal/server"
 	"github.com/fs0ciety7000/argos/internal/sshpool"
+	"github.com/fs0ciety7000/argos/internal/store"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
@@ -180,6 +183,20 @@ func serve() error {
 		return fmt.Errorf("known_hosts: %w", err)
 	}
 	pool := sshpool.New(hosts, signer, hostKeys, logger, sshpool.Options{})
+
+	db, err := store.Open(context.Background(), filepath.Join(dataDir, "argos.db"))
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+	hub := live.NewHub(logger)
+	col := collector.New(hosts, pool, db, db, func(s collector.Sample) {
+		hub.Publish(liveMessage{Type: "sample", Sample: &s})
+	}, logger, collector.Options{})
+	known := make(map[string]bool, len(hosts))
+	for _, h := range hosts {
+		known[h.Name] = true
+	}
 	fingerprint := ssh.FingerprintSHA256(signer.PublicKey())
 	logger.Info("ssh inventory loaded", "hosts", len(hosts), "key", fingerprint)
 
@@ -189,6 +206,13 @@ func serve() error {
 			Pool:        pool,
 			PublicKey:   sshpool.AuthorizedKey(signer.PublicKey()),
 			Fingerprint: fingerprint,
+		}, &server.Metrics{
+			Store: db,
+			Known: func(h string) bool { return known[h] },
+			Live: hub.Handler(auth.ValidOrigin, authSvc.Valid, func() any {
+				latest := col.Latest()
+				return liveMessage{Type: "snapshot", Hosts: pool.Statuses(), Latest: latest}
+			}),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
@@ -199,9 +223,25 @@ func serve() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	poolDone := pool.Start(ctx)
+	colDone := col.Start(ctx)
 	defer func() {
 		stop() // cancel ctx first, or Wait would block on an early return
+		colDone.Wait()
 		poolDone.Wait()
+	}()
+	go func() { // connection states for the live UI
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if hub.Clients() > 0 {
+					hub.Publish(liveMessage{Type: "status", Hosts: pool.Statuses()})
+				}
+			}
+		}
 	}()
 
 	errCh := make(chan error, 1)
@@ -241,4 +281,13 @@ func accessMiddleware(logger *slog.Logger) (server.Middleware, error) {
 	}
 	logger.Info("cloudflare access verification enabled", "team", team)
 	return v.Middleware(logger, "/health"), nil
+}
+
+// liveMessage is what the WebSocket sends: a snapshot on connect, then a
+// "sample" per collection and a "status" every few seconds.
+type liveMessage struct {
+	Type   string                      `json:"type"`
+	Hosts  []sshpool.Status            `json:"hosts,omitempty"`
+	Latest map[string]collector.Sample `json:"latest,omitempty"`
+	Sample *collector.Sample           `json:"sample,omitempty"`
 }

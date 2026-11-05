@@ -21,7 +21,7 @@ type Middleware func(http.Handler) http.Handler
 
 // New returns the root HTTP handler. edge, if non-nil, runs before
 // everything else except security headers (Cloudflare Access verification).
-func New(logger *slog.Logger, a *auth.Service, edge Middleware, hosts Hosts) http.Handler {
+func New(logger *slog.Logger, a *auth.Service, edge Middleware, hosts Hosts, metrics *Metrics) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -38,6 +38,7 @@ func New(logger *slog.Logger, a *auth.Service, edge Middleware, hosts Hosts) htt
 	// methods), and a WebSocket upgrade must check auth.ValidOrigin itself.
 	api := http.NewServeMux()
 	registerHosts(api, hosts)
+	registerMetrics(api, metrics)
 	mux.Handle("/api/", a.Require(api))
 
 	dist, err := fs.Sub(web.Dist, "dist")
