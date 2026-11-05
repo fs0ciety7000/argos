@@ -1,0 +1,9 @@
+.git
+.claude
+secrets
+.env
+.env.*
+**/node_modules
+web/dist
+bin
+docs
