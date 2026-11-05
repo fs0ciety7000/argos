@@ -131,8 +131,18 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 
 	// Always run the expensive password check; only consume a TOTP step
 	// when the password is right, so a wrong guess cannot burn the code.
-	if !s.password.Verify(req.Password) || !s.totp.Verify(req.Code) {
-		s.logger.Warn("login failed", clientAttrs(r)...)
+	// The failing factor is logged (never the submitted value) so the owner
+	// can tell a wrong password from a clock or secret mismatch; the client
+	// still gets one generic answer.
+	reason := ""
+	switch {
+	case !s.password.Verify(req.Password):
+		reason = "password"
+	case !s.totp.Verify(req.Code):
+		reason = "code"
+	}
+	if reason != "" {
+		s.logger.Warn("login failed", append([]any{"factor", reason}, clientAttrs(r)...)...)
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}

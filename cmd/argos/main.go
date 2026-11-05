@@ -25,6 +25,7 @@ import (
 	"github.com/fs0ciety7000/argos/internal/auth"
 	"github.com/fs0ciety7000/argos/internal/cfaccess"
 	"github.com/fs0ciety7000/argos/internal/server"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -44,11 +45,10 @@ func main() {
 func runCommand(name string, in io.Reader, out io.Writer) error {
 	switch name {
 	case "hash-password":
-		line, err := bufio.NewReader(in).ReadString('\n')
-		if err != nil && !errors.Is(err, io.EOF) {
-			return fmt.Errorf("read password: %w", err)
+		password, err := readPassword(in)
+		if err != nil {
+			return err
 		}
-		password := strings.TrimRight(line, "\r\n")
 		if len(password) < 12 {
 			return errors.New("password must be at least 12 characters")
 		}
@@ -68,6 +68,35 @@ func runCommand(name string, in io.Reader, out io.Writer) error {
 	default:
 		return fmt.Errorf("unknown command %q (want hash-password or totp-init)", name)
 	}
+}
+
+// readPassword prompts twice with echo off when stdin is a terminal, and
+// reads a single line otherwise (piped input, scripts, tests).
+func readPassword(in io.Reader) (string, error) {
+	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+		fd := int(f.Fd())
+		fmt.Fprint(os.Stderr, "Mot de passe : ")
+		first, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", fmt.Errorf("read password: %w", err)
+		}
+		fmt.Fprint(os.Stderr, "Confirmation : ")
+		second, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", fmt.Errorf("read password: %w", err)
+		}
+		if string(first) != string(second) {
+			return "", errors.New("the two passwords do not match")
+		}
+		return string(first), nil
+	}
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
 
 func serve() error {

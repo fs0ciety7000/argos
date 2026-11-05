@@ -28,11 +28,7 @@ Sans ces deux variables, Argos démarre (santé OK) mais la connexion renvoie `5
 Générer les valeurs (dans ton terminal, jamais dans le chat) :
 
 ```bash
-# bash / zsh
-read -rs PW && printf '%s\n' "$PW" | go run ./cmd/argos hash-password; unset PW
-# fish
-read -s -P 'Mot de passe : ' PW; and printf '%s\n' $PW | go run ./cmd/argos hash-password; set -e PW
-
+go run ./cmd/argos hash-password   # demande le mot de passe deux fois, sans l'afficher
 go run ./cmd/argos totp-init   # scanne l'URI otpauth:// dans ton appli d'authentification
 ```
 
