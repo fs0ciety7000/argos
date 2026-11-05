@@ -20,13 +20,19 @@
 | `ARGOS_DATA_DIR` | exécution | non | dossier des données persistantes (`/data`, défaut de l'image) |
 | `ARGOS_ADMIN_PASSWORD_HASH` | exécution | **oui** | hash argon2id (format PHC) du mot de passe, produit par `argos hash-password`. Contient des `$` : cocher « Is Literal » dans Coolify pour éviter l'interpolation. |
 | `ARGOS_TOTP_SECRET` | exécution | **oui** | secret TOTP base32, produit par `argos totp-init` |
+| `ARGOS_CF_ACCESS_TEAM_DOMAIN` | exécution | non | `cinecode.cloudflareaccess.com` : active la vérification du JWT Cloudflare Access |
+| `ARGOS_CF_ACCESS_AUD` | exécution | non | tag d'audience de l'application Access « Argos (control center) » |
 
 Sans ces deux variables, Argos démarre (santé OK) mais la connexion renvoie `503`. Une seule des deux, ou une valeur invalide : le démarrage échoue.
 
 Générer les valeurs (dans ton terminal, jamais dans le chat) :
 
 ```bash
+# bash / zsh
 read -rs PW && printf '%s\n' "$PW" | go run ./cmd/argos hash-password; unset PW
+# fish
+read -s -P 'Mot de passe : ' PW; and printf '%s\n' $PW | go run ./cmd/argos hash-password; set -e PW
+
 go run ./cmd/argos totp-init   # scanne l'URI otpauth:// dans ton appli d'authentification
 ```
 
@@ -46,6 +52,7 @@ Les valeurs vivent dans la ressource Coolify et dans `secrets/` (chiffré). Jama
 - **Enregistrement DNS à créer** : type `A`, nom `argos`, cible `152.53.176.13`, proxifié **oui** (WebSocket supporté par le proxy).
 - **SSL/TLS** : Full (strict), certificat Let's Encrypt émis par Coolify à l'origine. Jamais « Flexible ».
 - **Cloudflare Access** : application auto-hébergée sur `argos.fs0ciety.org`, politique « Allow » limitée à l'e-mail du propriétaire. Couche en plus de l'authentification d'Argos, pas à la place. `/health` reste derrière Access (la santé Coolify passe en interne).
+- **Vérification à l'origine** : avec `ARGOS_CF_ACCESS_*` définies, Argos refuse (`403`) toute requête sans JWT `Cf-Access-Jwt-Assertion` valide (signature RS256 via `https://<team>/cdn-cgi/access/certs`, `iss`, `aud`, `exp`). Un accès direct à l'IP du VPS est donc bloqué. Seul `/health` est exempté.
 
 ## Mise en production
 
