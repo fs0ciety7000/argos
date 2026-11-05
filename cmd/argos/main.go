@@ -19,13 +19,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/fs0ciety7000/argos/internal/auth"
 	"github.com/fs0ciety7000/argos/internal/cfaccess"
+	"github.com/fs0ciety7000/argos/internal/inventory"
 	"github.com/fs0ciety7000/argos/internal/server"
+	"github.com/fs0ciety7000/argos/internal/sshpool"
+	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 )
 
@@ -156,9 +160,36 @@ func serve() error {
 		return fmt.Errorf("cloudflare access config: %w", err)
 	}
 
+	hosts, err := inventory.Parse(os.Getenv("ARGOS_HOSTS"))
+	if err != nil {
+		return err
+	}
+	dataDir := os.Getenv("ARGOS_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "data"
+	}
+	sshDir := filepath.Join(dataDir, "ssh")
+	signer, err := sshpool.LoadOrCreateKey(sshDir)
+	if err != nil {
+		return fmt.Errorf("ssh key: %w", err)
+	}
+	hostKeys, err := sshpool.NewHostKeys(filepath.Join(sshDir, "known_hosts"), func(host, fp string) {
+		logger.Info("ssh host key recorded (first contact)", "host", host, "fingerprint", fp)
+	})
+	if err != nil {
+		return fmt.Errorf("known_hosts: %w", err)
+	}
+	pool := sshpool.New(hosts, signer, hostKeys, logger, sshpool.Options{})
+	fingerprint := ssh.FingerprintSHA256(signer.PublicKey())
+	logger.Info("ssh inventory loaded", "hosts", len(hosts), "key", fingerprint)
+
 	srv := &http.Server{
-		Addr:              addr,
-		Handler:           server.New(logger, authSvc, edge),
+		Addr: addr,
+		Handler: server.New(logger, authSvc, edge, server.Hosts{
+			Pool:        pool,
+			PublicKey:   sshpool.AuthorizedKey(signer.PublicKey()),
+			Fingerprint: fingerprint,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -167,6 +198,11 @@ func serve() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	poolDone := pool.Start(ctx)
+	defer func() {
+		stop() // cancel ctx first, or Wait would block on an early return
+		poolDone.Wait()
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fs0ciety7000/argos/internal/auth"
+	"github.com/fs0ciety7000/argos/internal/sshpool"
 )
 
 func newHandler(t *testing.T) http.Handler {
@@ -18,7 +19,7 @@ func newHandler(t *testing.T) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return New(logger, a, nil)
+	return New(logger, a, nil, Hosts{Pool: fakePool{}})
 }
 
 func TestHealth(t *testing.T) {
@@ -54,5 +55,20 @@ func TestLoginDisabledWithoutConfig(t *testing.T) {
 	newHandler(t).ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+type fakePool struct{}
+
+func (fakePool) Statuses() []sshpool.Status { return nil }
+func (fakePool) Reconnect(string) error     { return nil }
+
+func TestHostsAPIRequiresSession(t *testing.T) {
+	for _, path := range []string{"/api/hosts", "/api/ssh/public-key"} {
+		rec := httptest.NewRecorder()
+		newHandler(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s without session: %d, want 401", path, rec.Code)
+		}
 	}
 }

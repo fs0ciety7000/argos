@@ -1,0 +1,290 @@
+package sshpool
+
+import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"io"
+	"log/slog"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/fs0ciety7000/argos/internal/inventory"
+)
+
+// testServer is a minimal SSH server: public-key auth for one key, exec
+// requests answered with a canned output.
+type testServer struct {
+	t       *testing.T
+	ln      net.Listener
+	cfg     *ssh.ServerConfig
+	mu      sync.Mutex
+	conns   []net.Conn
+	outputs map[string]string
+	execs   []string
+}
+
+func newHostSigner(t *testing.T) ssh.Signer {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func startServer(t *testing.T, addr string, hostKey ssh.Signer, client ssh.PublicKey) *testServer {
+	t.Helper()
+	cfg := &ssh.ServerConfig{
+		PublicKeyCallback: func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if string(key.Marshal()) == string(client.Marshal()) {
+				return nil, nil
+			}
+			return nil, errors.New("unauthorized")
+		},
+	}
+	cfg.AddHostKey(hostKey)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &testServer{t: t, ln: ln, cfg: cfg, outputs: map[string]string{}}
+	go s.serve()
+	t.Cleanup(s.close)
+	return s
+}
+
+func (s *testServer) addr() string { return s.ln.Addr().String() }
+
+func (s *testServer) close() {
+	s.ln.Close()
+	s.mu.Lock()
+	for _, c := range s.conns {
+		c.Close()
+	}
+	s.mu.Unlock()
+}
+
+func (s *testServer) serve() {
+	for {
+		nc, err := s.ln.Accept()
+		if err != nil {
+			return
+		}
+		s.mu.Lock()
+		s.conns = append(s.conns, nc)
+		s.mu.Unlock()
+		go s.handle(nc)
+	}
+}
+
+func (s *testServer) handle(nc net.Conn) {
+	_, chans, reqs, err := ssh.NewServerConn(nc, s.cfg)
+	if err != nil {
+		return
+	}
+	go ssh.DiscardRequests(reqs) // replies false to keepalives: still a reply
+	for nch := range chans {
+		ch, creqs, err := nch.Accept()
+		if err != nil {
+			continue
+		}
+		go func() {
+			defer ch.Close()
+			for req := range creqs {
+				if req.Type != "exec" {
+					_ = req.Reply(false, nil)
+					continue
+				}
+				n := binary.BigEndian.Uint32(req.Payload[:4])
+				cmd := string(req.Payload[4 : 4+n])
+				s.mu.Lock()
+				s.execs = append(s.execs, cmd)
+				out := s.outputs[cmd]
+				s.mu.Unlock()
+				_ = req.Reply(true, nil)
+				_, _ = io.WriteString(ch, out)
+				_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+				return
+			}
+		}()
+	}
+}
+
+type fixture struct {
+	pool   *Pool
+	dir    string
+	signer ssh.Signer
+	cancel context.CancelFunc
+	wg     *sync.WaitGroup
+}
+
+func newFixture(t *testing.T, addr string) *fixture {
+	t.Helper()
+	dir := t.TempDir()
+	signer, err := LoadOrCreateKey(filepath.Join(dir, "ssh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &fixture{dir: dir, signer: signer}
+}
+
+func (f *fixture) start(t *testing.T, addr string) {
+	t.Helper()
+	host, port, _ := net.SplitHostPort(addr)
+	p, _ := strconv.Atoi(port)
+	hk, err := NewHostKeys(filepath.Join(f.dir, "ssh", "known_hosts"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := []inventory.Host{{Name: "box", Kind: inventory.KindVPS, Address: host, Port: p, User: "argos"}}
+	f.pool = New(hosts, f.signer, hk, slog.New(slog.NewTextHandler(io.Discard, nil)), Options{
+		DialTimeout: time.Second, Keepalive: 50 * time.Millisecond,
+		MinBackoff: 20 * time.Millisecond, MaxBackoff: 100 * time.Millisecond,
+		CommandTimeout: time.Second, MaxOutput: 64,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	f.cancel = cancel
+	f.wg = f.pool.Start(ctx)
+	t.Cleanup(func() { cancel(); f.wg.Wait() })
+}
+
+func waitState(t *testing.T, p *Pool, want State) Status {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if s := p.Statuses()[0]; s.State == want {
+			return s
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("state never became %s; last: %+v", want, p.Statuses()[0])
+	return Status{}
+}
+
+func TestConnectRunAndTOFU(t *testing.T) {
+	hostKey := newHostSigner(t)
+	f := newFixture(t, "")
+	srv := startServer(t, "127.0.0.1:0", hostKey, f.signer.PublicKey())
+	srv.outputs[CmdUname.line] = "Linux 6.1 x86_64\n"
+	srv.outputs[CmdMeminfo.line] = strings.Repeat("x", 100)
+	f.start(t, srv.addr())
+
+	st := waitState(t, f.pool, StateConnected)
+	if st.HostKey != ssh.FingerprintSHA256(hostKey.PublicKey()) {
+		t.Fatalf("fingerprint = %s", st.HostKey)
+	}
+	known, _ := os.ReadFile(filepath.Join(f.dir, "ssh", "known_hosts"))
+	if !strings.Contains(string(known), "127.0.0.1") {
+		t.Fatalf("host key not recorded: %q", known)
+	}
+
+	out, err := f.pool.Run(context.Background(), "box", CmdUname)
+	if err != nil || string(out) != "Linux 6.1 x86_64\n" {
+		t.Fatalf("run uname: %q %v", out, err)
+	}
+	if _, err := f.pool.Run(context.Background(), "box", CmdMeminfo); err == nil {
+		t.Fatal("oversized output should fail")
+	}
+	if _, err := f.pool.Run(context.Background(), "box", Command{}); err == nil {
+		t.Fatal("zero command must be refused")
+	}
+	if _, err := f.pool.Run(context.Background(), "nope", CmdUname); !errors.Is(err, ErrUnknownHost) {
+		t.Fatalf("unknown host: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if s := f.pool.Statuses()[0]; s.LastSeen == nil || s.State != StateConnected {
+		t.Fatalf("keepalive did not update status: %+v", s)
+	}
+}
+
+func TestReconnectAfterServerRestart(t *testing.T) {
+	hostKey := newHostSigner(t)
+	f := newFixture(t, "")
+	srv := startServer(t, "127.0.0.1:0", hostKey, f.signer.PublicKey())
+	addr := srv.addr()
+	f.start(t, addr)
+	waitState(t, f.pool, StateConnected)
+
+	srv.close()
+	waitState(t, f.pool, StateError)
+	if _, err := f.pool.Run(context.Background(), "box", CmdUname); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("run while down: %v", err)
+	}
+
+	startServer(t, addr, hostKey, f.signer.PublicKey())
+	waitState(t, f.pool, StateConnected)
+}
+
+func TestHostKeyChangeIsRefused(t *testing.T) {
+	f := newFixture(t, "")
+	srv := startServer(t, "127.0.0.1:0", newHostSigner(t), f.signer.PublicKey())
+	addr := srv.addr()
+	f.start(t, addr)
+	waitState(t, f.pool, StateConnected)
+
+	srv.close()
+	startServer(t, addr, newHostSigner(t), f.signer.PublicKey()) // impostor
+	st := waitState(t, f.pool, StateHostKeyChanged)
+	if !strings.Contains(st.Error, "SHA256:") {
+		t.Fatalf("error should name fingerprints: %q", st.Error)
+	}
+	// It must stay refused, even after an explicit reconnect.
+	_ = f.pool.Reconnect("box")
+	time.Sleep(200 * time.Millisecond)
+	if s := f.pool.Statuses()[0]; s.State == StateConnected {
+		t.Fatal("connected to a host with a changed key")
+	}
+}
+
+func TestUnauthorizedClient(t *testing.T) {
+	f := newFixture(t, "")
+	other := newHostSigner(t) // server only trusts some other key
+	srv := startServer(t, "127.0.0.1:0", newHostSigner(t), other.PublicKey())
+	f.start(t, srv.addr())
+	st := waitState(t, f.pool, StateError)
+	if !strings.Contains(st.Error, "unable to authenticate") {
+		t.Fatalf("unexpected error: %q", st.Error)
+	}
+}
+
+func TestLoadOrCreateKey(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ssh")
+	a, err := LoadOrCreateKey(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := LoadOrCreateKey(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a.PublicKey().Marshal()) != string(b.PublicKey().Marshal()) {
+		t.Fatal("key not persisted")
+	}
+	info, _ := os.Stat(filepath.Join(dir, keyFile))
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("key mode = %o", info.Mode().Perm())
+	}
+	if !strings.HasPrefix(AuthorizedKey(a.PublicKey()), "ssh-ed25519 ") {
+		t.Fatalf("authorized key = %q", AuthorizedKey(a.PublicKey()))
+	}
+	_ = os.Chmod(filepath.Join(dir, keyFile), 0o644)
+	if _, err := LoadOrCreateKey(dir); err == nil {
+		t.Fatal("world-readable key must be refused")
+	}
+}

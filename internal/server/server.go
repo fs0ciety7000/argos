@@ -16,13 +16,12 @@ const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 
 	"img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; " +
 	"base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
-// New returns the root HTTP handler.
 // Middleware wraps a handler (e.g. the Cloudflare Access check).
 type Middleware func(http.Handler) http.Handler
 
 // New returns the root HTTP handler. edge, if non-nil, runs before
 // everything else except security headers (Cloudflare Access verification).
-func New(logger *slog.Logger, a *auth.Service, edge Middleware) http.Handler {
+func New(logger *slog.Logger, a *auth.Service, edge Middleware, hosts Hosts) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -38,6 +37,7 @@ func New(logger *slog.Logger, a *auth.Service, edge Middleware) http.Handler {
 	// Rules: no GET handler may change state (SameOrigin only checks unsafe
 	// methods), and a WebSocket upgrade must check auth.ValidOrigin itself.
 	api := http.NewServeMux()
+	registerHosts(api, hosts)
 	mux.Handle("/api/", a.Require(api))
 
 	dist, err := fs.Sub(web.Dist, "dist")

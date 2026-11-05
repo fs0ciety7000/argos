@@ -4,7 +4,7 @@
 
 ## Objectif
 
-Un hub unique pour surveiller et piloter l'infrastructure auto-hébergée (VPS Netcup, seedboxes Whatbox et HbD) : santé des machines, conteneurs Docker, logs et stockage (30+ TB), sans passer d'un outil à l'autre (Coolify, Plex/Jellyfin, SSH).
+Un hub unique pour surveiller et piloter l'infrastructure auto-hébergée (VPS Netcup et HbD, seedbox Whatbox) : santé des machines, conteneurs Docker, logs et stockage (30+ TB), sans passer d'un outil à l'autre (Coolify, Plex/Jellyfin, SSH).
 
 ## Public
 
@@ -14,7 +14,7 @@ Usage personnel : un seul utilisateur, une seule instance.
 
 1. **Inventaire des hôtes** : connexion SSH par clé, sans agent installé sur les machines.
 2. **Métriques temps réel** : CPU, RAM, réseau, poussés au frontend par WebSocket, avec graphes.
-3. **Conteneurs Docker** (VPS Netcup uniquement) : état, redémarrage manuel, redémarrage automatique des conteneurs défaillants.
+3. **Conteneurs Docker** (VPS Netcup et HbD) : état, redémarrage manuel, redémarrage automatique des conteneurs défaillants.
 4. **Logs en flux continu** : conteneurs Docker et journald ; fichiers de logs utilisateur sur les seedboxes.
 5. **Stockage** : remplissage des disques et quotas par hôte, seuils visuels avant saturation.
 
@@ -23,7 +23,8 @@ Usage personnel : un seul utilisateur, une seule instance.
 | Hôte | Accès | V1 |
 |---|---|---|
 | Netcup (VPS) | SSH + Docker | lecture + actions (restart conteneurs) |
-| Whatbox, HbD (seedbox partagée) | SSH sans root, sans Docker | lecture seule : disque, quota, processus, logs |
+| HbD (VPS, `85.17.179.101`) | SSH + Docker | lecture + actions (restart conteneurs) |
+| Whatbox (seedbox partagée) | SSH sans root, sans Docker | lecture seule : disque, quota, processus, logs |
 
 ## Historique
 

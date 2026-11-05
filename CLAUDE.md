@@ -20,7 +20,7 @@
 ## Spécifique à ce projet
 
 - Skills : `golang-how-to` pour tout code Go ; `svelte-core-bestpractices` + `svelte-code-writer` (lancer `svelte-autofixer`) pour tout `.svelte`. `frontend-dev` est orienté React : pour Svelte, travaille toi-même ou précise Svelte 5 dans la consigne.
-- Accès aux hôtes : seedboxes (Whatbox, HbD) en **lecture seule** ; seul Netcup accepte des actions Docker. Aucune commande shell arbitraire depuis l'UI : uniquement des actions nommées, validées côté serveur.
+- Accès aux hôtes : seedbox (Whatbox) en **lecture seule** ; les VPS (Netcup, HbD) acceptent des actions Docker, uniquement si `docker: true` dans `ARGOS_HOSTS`. Aucune commande shell arbitraire depuis l'UI : uniquement des actions nommées, validées côté serveur.
 - Clés SSH et secrets : uniquement côté serveur (volume `/data` ou variables), jamais envoyés au frontend ni écrits dans les logs.
 - Toute route hors `/health` exige une session authentifiée (V1 : compte unique, argon2id + TOTP, `internal/auth`).
 - `web/dist/` est un artefact de build (seul `.gitkeep` est versionné) : lance `npm run build` avant `go build`.
