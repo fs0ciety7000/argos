@@ -37,7 +37,8 @@ func newServer(t *testing.T, s Streamer, origin bool) (*httptest.Server, *Handle
 	t.Helper()
 	h := &Handler{
 		Streamer:   s,
-		Known:      func(host, c string) bool { return host == "vps" && c == "web" },
+		Known:      func(host, c string) bool { return host == "vps" && (c == "web" || c == "coolify-db") },
+		Denied:     func(c string) bool { return c == "coolify-db" },
 		OriginOK:   func(*http.Request) bool { return origin },
 		StillValid: func(*http.Request) bool { return true },
 		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -108,6 +109,9 @@ func TestRefusals(t *testing.T) {
 		t.Fatalf("cross-origin: %v %v", err, res)
 	}
 	srv2, h := newServer(t, &fakeStreamer{block: true}, true)
+	if _, res, err := dial(t, srv2, "host=vps&container=coolify-db"); err == nil || res.StatusCode != http.StatusForbidden {
+		t.Errorf("denied container: %v %v", err, res)
+	}
 	for _, q := range []string{"host=vps&container=ghost", "host=box&container=web", "host=vps&container=a;id"} {
 		if _, res, err := dial(t, srv2, q); err == nil || res.StatusCode != http.StatusNotFound {
 			t.Errorf("%s: %v %v", q, err, res)

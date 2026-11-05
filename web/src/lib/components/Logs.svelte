@@ -6,6 +6,8 @@
   import { LogStream, MAX_LINES, type LogLine } from '../logs.svelte'
 
   const stream = new LogStream()
+  // Coolify core: logs never streamed (may carry tokens).
+  const CORE = new Set(['coolify', 'coolify-proxy', 'coolify-db', 'coolify-redis', 'coolify-realtime', 'coolify-sentinel'])
 
   // Deep link from the Containers page (read once at mount), else the first host.
   const target = nav.logTarget
@@ -107,9 +109,11 @@
     ended: 'flux terminé (conteneur arrêté ou logs fermés)',
     timeout: 'durée maximale d’une heure atteinte',
     'not-connected': 'hôte non connecté',
+    refused: 'refusé par le script gardien (conteneur protégé ou introuvable)',
+    busy: 'trop de flux ouverts sur cet hôte, réessaie dans un instant',
     error: 'erreur côté serveur (script argos-docker à jour ?)',
     session: 'session expirée',
-    refused: 'connexion refusée (conteneur introuvable ou trop de flux ouverts)',
+    rejected: 'connexion refusée (conteneur protégé, introuvable ou trop de flux ouverts)',
     closed: 'connexion fermée',
   }
 
@@ -149,7 +153,7 @@
         <span class="mono lbl">conteneur</span>
         <select bind:value={container} disabled={containers.length === 0}>
           <option value="" disabled>{containers.length ? 'Choisir…' : 'aucun'}</option>
-          {#each containers as c (c.id)}
+          {#each containers.filter((c) => !CORE.has(c.name)) as c (c.id)}
             <option value={c.name}>{c.state === 'running' ? '●' : '◌'} {c.name}</option>
           {/each}
         </select>

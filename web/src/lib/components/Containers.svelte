@@ -8,6 +8,9 @@
   import { bytes, pct } from '../format'
   import { nav } from '../nav.svelte'
 
+  // Coolify core: never restarted, logs never streamed (may carry tokens).
+  const CORE = new Set(['coolify', 'coolify-proxy', 'coolify-db', 'coolify-redis', 'coolify-realtime', 'coolify-sentinel'])
+
   let filter = $state('')
   let onlyIssues = $state(false)
   let actions = $state.raw<Action[]>([])
@@ -177,9 +180,11 @@
                     <td class="mono num hide-sm">{c.mem !== undefined ? bytes(c.mem) : '—'}</td>
                     <td class="mono num hide-sm dim">{c.restartCount}</td>
                     <td class="act">
-                      <button type="button" class="ghost-sm" onclick={() => nav.openLogs(hc.host, c.name)} aria-label="Journaux de {c.name}">
-                        Logs
-                      </button>
+                      {#if !CORE.has(c.name)}
+                        <button type="button" class="ghost-sm" onclick={() => nav.openLogs(hc.host, c.name)} aria-label="Journaux de {c.name}">
+                          Logs
+                        </button>
+                      {/if}
                       {#if !c.protected}
                         <button
                           type="button"

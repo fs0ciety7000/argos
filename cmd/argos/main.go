@@ -228,6 +228,7 @@ func serve() error {
 		}, &server.Containers{Manager: dockerMgr, Actions: db, Logs: &logstream.Handler{
 			Streamer:   pool,
 			Known:      dockerMgr.HasContainer,
+			Denied:     docker.IsCore,
 			OriginOK:   auth.ValidOrigin,
 			StillValid: authSvc.Valid,
 			Logger:     logger,

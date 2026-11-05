@@ -58,7 +58,7 @@ export class LogStream {
       this.#ws = null
       if (this.state !== 'ended') {
         this.state = 'error'
-        this.reason = ev.code === 1008 ? 'session' : ev.code === 1006 ? 'refused' : 'closed'
+        this.reason = ev.code === 1008 ? 'session' : ev.code === 1006 ? 'rejected' : 'closed'
       }
     }
   }

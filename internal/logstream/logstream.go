@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/coder/websocket"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/fs0ciety7000/argos/internal/sshpool"
 )
@@ -58,7 +59,9 @@ type message struct {
 type Handler struct {
 	Streamer Streamer
 	// Known reports whether container currently exists on docker host.
-	Known      func(host, container string) bool
+	Known func(host, container string) bool
+	// Denied reports containers whose logs must never be streamed.
+	Denied     func(container string) bool
 	OriginOK   func(*http.Request) bool
 	StillValid func(*http.Request) bool
 	Logger     *slog.Logger
@@ -75,6 +78,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	cmd, err := sshpool.DockerLogs(name)
 	if err != nil || !h.Known(host, name) {
 		http.Error(w, "unknown container", http.StatusNotFound)
+		return
+	}
+	if h.Denied != nil && h.Denied(name) {
+		http.Error(w, "logs of this container are not available", http.StatusForbidden)
 		return
 	}
 	if h.active.Add(1) > maxStreams {
@@ -213,9 +220,21 @@ func reason(err error) string {
 		return "viewer-left"
 	case errors.Is(err, sshpool.ErrNotConnected):
 		return "not-connected"
+	case exitStatus(err) == 65:
+		return "refused" // guard script: protected or no such container
+	case exitStatus(err) == 66:
+		return "busy" // guard script: too many followers on the host
 	default:
 		return "error"
 	}
+}
+
+func exitStatus(err error) int {
+	var ee *ssh.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitStatus()
+	}
+	return -1
 }
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)`)

@@ -57,6 +57,10 @@ var coreProtected = map[string]bool{
 	"coolify-realtime": true, "coolify-sentinel": true,
 }
 
+// IsCore reports Coolify core containers: never restarted, and their logs
+// (which can carry tokens) are never streamed.
+func IsCore(name string) bool { return coreProtected[name] }
+
 // Auto-restart policy.
 const (
 	autoMaxPerHour   = 3

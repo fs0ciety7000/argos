@@ -332,6 +332,11 @@ func (p *Pool) Stream(ctx context.Context, name string, cmd Command, onLine func
 				return ctx.Err()
 			}
 			if errors.Is(err, io.EOF) {
+				// Output closed: report the command's exit status (a guard
+				// script refusal is an *ssh.ExitError).
+				if werr := sess.Wait(); werr != nil {
+					return fmt.Errorf("%s: %w", cmd.name, werr)
+				}
 				return nil
 			}
 			return fmt.Errorf("%s: %w", cmd.name, err)

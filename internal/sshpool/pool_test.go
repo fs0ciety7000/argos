@@ -123,7 +123,11 @@ func (s *testServer) handle(nc net.Conn) {
 					return
 				}
 				_, _ = io.WriteString(ch, out)
-				_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+				status := uint32(0)
+				if cmd == "refuse" {
+					status = 65
+				}
+				_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{status}))
 				return
 			}
 		}()
@@ -437,6 +441,10 @@ func TestStream(t *testing.T) {
 		t.Fatal("stream did not stop on cancel")
 	}
 
+	var ee *ssh.ExitError
+	if err := f.pool.Stream(context.Background(), "box", Command{name: "t", line: "refuse", stream: true}, func([]byte, bool) {}); !errors.As(err, &ee) || ee.ExitStatus() != 65 {
+		t.Fatalf("refused stream should surface exit status 65, got %v", err)
+	}
 	if _, err := f.pool.Run(context.Background(), "box", Command{name: "t", line: "lines", stream: true}); err == nil {
 		t.Fatal("Run must refuse stream commands")
 	}
