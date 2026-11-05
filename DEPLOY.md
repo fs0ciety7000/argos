@@ -23,6 +23,7 @@
 | `ARGOS_HOSTS` | exécution | non | inventaire JSON : `name`, `kind` (`vps`/`seedbox`), `address`, `port` (22 par défaut), `user`, `docker` (vps seulement). « Is Literal » coché. |
 | `ARGOS_CF_ACCESS_TEAM_DOMAIN` | exécution | non | `cinecode.cloudflareaccess.com` : active la vérification du JWT Cloudflare Access |
 | `ARGOS_CF_ACCESS_AUD` | exécution | non | tag d'audience de l'application Access « Argos (control center) » |
+| `ARGOS_PROTECTED_CONTAINERS` | exécution | non | conteneurs qu'Argos ne redémarre jamais, séparés par des virgules ; `nom*` = préfixe (utile pour les conteneurs Coolify renommés à chaque déploiement). Le cœur de Coolify et le conteneur d'Argos sont toujours protégés. |
 
 Sans ces deux variables, Argos démarre (santé OK) mais la connexion renvoie `503`. Une seule des deux, ou une valeur invalide : le démarrage échoue.
 
@@ -47,8 +48,22 @@ Les valeurs vivent dans la ressource Coolify et dans `secrets/` (chiffré). Jama
 
 - Au premier démarrage, Argos génère sa propre clé ed25519 dans `/data/ssh/`. La clé privée ne quitte jamais le volume ; la clé publique s'affiche dans **Hôtes** : l'ajouter à `~/.ssh/authorized_keys` de l'utilisateur configuré sur chaque hôte.
 - Empreintes des serveurs : enregistrées au premier contact dans `/data/ssh/known_hosts`. Si une empreinte change, Argos refuse la connexion (« clé d'hôte modifiée »), même après « Reconnecter ». Après une réinstallation légitime : retirer la ligne de l'hôte, puis « Reconnecter ».
-- Utilisateur conseillé sur les VPS : `argos`, sans sudo, hors du groupe `docker` tant que les actions Docker ne sont pas livrées (le groupe `docker` équivaut à root).
+- Utilisateur sur les VPS : `argos`, **jamais dans le groupe `docker`** (équivaut à root). Son seul droit élevé est le script gardien ci-dessous.
 - Netcup (même machine qu'Argos) : adresse `152.53.176.13` ; le pare-feu doit laisser le conteneur joindre le port SSH de l'hôte.
+
+## Docker sur les VPS (script gardien)
+
+Argos ne parle à Docker qu'à travers `deploy/argos-docker`, un script appartenant à root qui n'accepte que `list` (champs fixes, jamais l'environnement ni les volumes), `stats` et `restart <nom>` (nom exact, cœur de Coolify refusé, redémarrage par ID complet). Installation sur chaque VPS Docker, en root :
+
+```bash
+install -o root -g root -m 0755 argos-docker /usr/local/sbin/argos-docker
+echo 'argos ALL=(root) NOPASSWD: /usr/local/sbin/argos-docker' > /etc/sudoers.d/argos && chmod 0440 /etc/sudoers.d/argos && visudo -c
+```
+
+- Ne pas ajouter `SETENV`, `env_keep` ni de joker à cette ligne sudoers.
+- Puis passer `"docker": true` sur l'hôte dans `ARGOS_HOSTS` et redéployer.
+- Redémarrage automatique : opt-in par conteneur avec le label Docker `argos.autorestart=true`. Conteneur arrêté sur erreur ou `unhealthy`, confirmé sur 2 relevés, 3 tentatives par heure maximum (espacées de 1, 2, 4 min), puis abandon jusqu'à 1 h de bon fonctionnement ou un redémarrage manuel. Chaque action va au journal.
+- Limite connue : une application qui sort en erreur sur un `docker stop` volontaire peut être relancée si elle porte le label.
 
 ## Domaine
 
