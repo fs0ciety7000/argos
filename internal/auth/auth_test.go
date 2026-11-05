@@ -435,7 +435,7 @@ func TestCurrentCode(t *testing.T) {
 	if want := hotp(rfcKey, uint64(now.Unix()/30), 6); code != want {
 		t.Fatalf("code = %s, want %s", code, want)
 	}
-	if left != 25*time.Second {
-		t.Fatalf("left = %v, want 25s", left)
+	if left != 5*time.Second {
+		t.Fatalf("left = %v, want 5s", left)
 	}
 }
