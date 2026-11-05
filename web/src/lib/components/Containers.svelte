@@ -12,7 +12,9 @@
   const CORE = new Set(['coolify', 'coolify-proxy', 'coolify-db', 'coolify-redis', 'coolify-realtime', 'coolify-sentinel'])
 
   let filter = $state('')
-  let onlyIssues = $state(false)
+  // Deep link from the overview ("problems only"), read once at mount.
+  let onlyIssues = $state(nav.containerIssues)
+  nav.containerIssues = false
   let actions = $state.raw<Action[]>([])
   let now = $state(Date.now())
   let notice = $state<{ tone: 'ok' | 'crit'; text: string } | null>(null)

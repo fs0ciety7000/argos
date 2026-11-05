@@ -3,11 +3,19 @@
   import { cubicOut } from 'svelte/easing'
   import type { HostStatus } from '../hosts'
   import type { Sample } from '../live.svelte'
+  import type { HostContainers } from '../containers'
+  import { nav } from '../nav.svelte'
   import { bitrate, bytes, fillTone, pct, reducedMotion } from '../format'
   import Sparkline from './Sparkline.svelte'
 
-  let { status, sample, cpuHistory }: { status: HostStatus; sample?: Sample; cpuHistory: (number | null)[] } =
-    $props()
+  let {
+    status,
+    sample,
+    cpuHistory,
+    containers,
+  }: { status: HostStatus; sample?: Sample; cpuHistory: (number | null)[]; containers?: HostContainers } = $props()
+
+  let failingCount = $derived(containers?.containers.filter((c) => c.failing).length ?? 0)
 
   const duration = reducedMotion() ? 0 : 800
   const cpu = new Tween(0, { duration, easing: cubicOut })
@@ -41,6 +49,8 @@
     switch (status.state) {
       case 'connected':
         if (diskRatio >= 0.95) return { tone: 'crit', text: `■ disque ${pct(diskRatio * 100)} %` }
+        if (failingCount > 0)
+          return { tone: 'crit', text: `■ ${failingCount} conteneur${failingCount > 1 ? 's' : ''} en échec` }
         if (diskRatio >= 0.85) return { tone: 'warn', text: `▲ disque ${pct(diskRatio * 100)} %` }
         return { tone: 'ok', text: '● nominal' }
       case 'connecting':
@@ -102,6 +112,18 @@
     <span>↑ <b>{tx.value}</b> {tx.unit}</span>
     {#if sample}<span>charge <b>{sample.load1.toFixed(2)}</b></span>{/if}
   </p>
+  {#if containers}
+    <button type="button" class="mono ctr" data-tone={failingCount > 0 ? 'crit' : 'ok'} onclick={() => nav.openContainerIssues()}>
+      <span>conteneurs <b>{containers.containers.length}</b></span>
+      {#if failingCount > 0}
+        <span class="bad">■ {failingCount} en échec →</span>
+      {:else if containers.error}
+        <span class="dim">liste indisponible</span>
+      {:else}
+        <span class="good">● tous sains</span>
+      {/if}
+    </button>
+  {/if}
   {#if !connected && status.error}
     <p class="mono error">{status.error}</p>
   {/if}
@@ -284,6 +306,45 @@
 
   .dim {
     opacity: 0.45;
+  }
+
+  .ctr {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    min-height: 36px;
+    padding: 0 12px;
+    font-size: 12px;
+    color: var(--text-2);
+    background: var(--surface-sunk);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-control);
+    cursor: pointer;
+    transition: border-color var(--dur-fast);
+    align-items: center;
+  }
+
+  .ctr:hover {
+    border-color: var(--line-strong);
+  }
+
+  .ctr[data-tone='crit'] {
+    border-color: color-mix(in srgb, var(--crit) 30%, transparent);
+    background: color-mix(in srgb, var(--crit) 6%, var(--surface-sunk));
+  }
+
+  .ctr b {
+    color: var(--text);
+    font-weight: 400;
+  }
+
+  .ctr .bad {
+    color: var(--crit);
+  }
+
+  .ctr .good {
+    color: var(--ok);
   }
 
   .error {

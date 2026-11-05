@@ -9,6 +9,8 @@
   import ThroughputChart from './ThroughputChart.svelte'
   import StorageCard from './StorageCard.svelte'
   import HostCard from './HostCard.svelte'
+  import { nav } from '../nav.svelte'
+  import type { Container } from '../containers'
 
   const RANGES: { id: Range; label: string }[] = [
     { id: '1h', label: '1h' },
@@ -110,6 +112,32 @@
   let txLabel = $derived(bitrate(rates ? txT.current : null))
 
   let hosts = $derived(live.hosts ?? [])
+
+  // Failing containers across Docker hosts, most recent failure first.
+  const MAX_FAILING = 6
+  let failing = $derived(
+    Object.values(live.containers ?? {})
+      .flatMap((hc) => hc.containers.filter((c) => c.failing).map((c) => ({ host: hc.host, c })))
+      .sort((a, b) => (b.c.finishedAt ?? '').localeCompare(a.c.finishedAt ?? '')),
+  )
+  let nowTick = $state(Date.now())
+  onMount(() => {
+    const t = setInterval(() => (nowTick = Date.now()), 30_000)
+    return () => clearInterval(t)
+  })
+  function reason(c: Container): string {
+    if (c.state === 'restarting') return '▲ boucle de redémarrage'
+    if (c.health === 'unhealthy') return '■ unhealthy'
+    return c.oomKilled ? '■ mémoire (OOM)' : `■ arrêté (code ${c.exitCode})`
+  }
+  function since(c: Container): string {
+    const ref = c.state === 'running' ? c.startedAt : c.finishedAt
+    if (!ref) return ''
+    const s = Math.max(0, Math.round((nowTick - Date.parse(ref)) / 1000))
+    if (s < 3600) return `depuis ${Math.max(1, Math.floor(s / 60))} min`
+    if (s < 86400) return `depuis ${Math.floor(s / 3600)} h`
+    return `depuis ${Math.floor(s / 86400)} j`
+  }
   let reachable = $derived(hosts.filter((h) => h.state === 'connected').length)
 </script>
 
@@ -151,6 +179,28 @@
     </div>
   </section>
 
+  {#if failing.length > 0}
+    <section class="card failing" aria-labelledby="failing-title" in:fly={{ y: 10, duration: 600, easing: cubicOut }}>
+      <header class="f-head">
+        <h3 id="failing-title"><span class="crit">■</span> Conteneurs en échec <span class="mono count">· {failing.length}</span></h3>
+        <button type="button" class="link mono" onclick={() => nav.openContainerIssues()}>Voir dans Conteneurs →</button>
+      </header>
+      <ul role="list">
+        {#each failing.slice(0, MAX_FAILING) as f (f.host + f.c.id)}
+          <li>
+            <span class="mono reason">{reason(f.c)}</span>
+            <span class="who"><b>{f.c.name}</b> <span class="mono dim">· {f.host}{f.c.autoRestart ? ' · auto' : ''}</span></span>
+            <span class="mono dim since">{since(f.c)}</span>
+            <button type="button" class="ghost mono" onclick={() => nav.openLogs(f.host, f.c.name)} aria-label="Journaux de {f.c.name}">Logs</button>
+          </li>
+        {/each}
+      </ul>
+      {#if failing.length > MAX_FAILING}
+        <p class="mono dim more">+ {failing.length - MAX_FAILING} autre{failing.length - MAX_FAILING > 1 ? 's' : ''}</p>
+      {/if}
+    </section>
+  {/if}
+
   {#if live.hosts === null}
     <div class="hosts">
       {#each [0, 1, 2] as i (i)}<div class="card skeleton"></div>{/each}
@@ -161,7 +211,12 @@
     <section class="hosts" aria-label="Hôtes">
       {#each hosts as h, i (h.host.name)}
         <div in:fly={{ y: 14, duration: 800, delay: 160 + i * 80, easing: cubicOut }}>
-          <HostCard status={h} sample={live.latest[h.host.name]} cpuHistory={cpu[h.host.name]?.v ?? []} />
+          <HostCard
+            status={h}
+            sample={live.latest[h.host.name]}
+            cpuHistory={cpu[h.host.name]?.v ?? []}
+            containers={live.containers?.[h.host.name]}
+          />
         </div>
       {/each}
     </section>
@@ -329,6 +384,106 @@
     place-items: center;
     font-size: 12px;
     color: var(--text-2);
+  }
+
+  .failing {
+    padding: 18px 20px;
+    border-color: color-mix(in srgb, var(--crit) 30%, transparent);
+  }
+
+  .f-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px 16px;
+    margin-bottom: 10px;
+  }
+
+  .f-head h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 500;
+  }
+
+  .crit {
+    color: var(--crit);
+  }
+
+  .count,
+  .dim {
+    color: var(--text-2);
+    font-weight: 400;
+  }
+
+  .link {
+    min-height: 32px;
+    padding: 0;
+    font-size: 12px;
+    color: var(--accent);
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+
+  .failing ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .failing li {
+    display: grid;
+    grid-template-columns: minmax(150px, auto) minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 6px 16px;
+    padding: 8px 0;
+    border-top: 1px solid var(--line);
+    font-size: 13px;
+  }
+
+  .reason {
+    font-size: 12px;
+    color: var(--crit);
+    white-space: nowrap;
+  }
+
+  .who {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .who b {
+    font-weight: 500;
+  }
+
+  .since {
+    font-size: 12px;
+  }
+
+  .ghost {
+    min-height: 32px;
+    padding: 0 12px;
+    font-size: 12px;
+    background: var(--fill);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-control);
+    cursor: pointer;
+  }
+
+  .more {
+    margin: 8px 0 0;
+    font-size: 12px;
+  }
+
+  @media (max-width: 720px) {
+    .failing li {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+
+    .ghost {
+      min-height: 44px;
+    }
   }
 
   .hosts {
