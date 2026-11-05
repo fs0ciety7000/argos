@@ -3,6 +3,7 @@
   import Logo from './Logo.svelte'
   import Hosts from './Hosts.svelte'
   import Overview from './Overview.svelte'
+  import Containers from './Containers.svelte'
   import { onMount } from 'svelte'
   import { live } from '../live.svelte'
 
@@ -65,6 +66,8 @@
       <Overview />
     {:else if current === 'Hôtes'}
       <Hosts />
+    {:else if current === 'Conteneurs'}
+      <Containers />
     {:else}
       <section class="empty">
         <p class="mono kicker">{current}</p>

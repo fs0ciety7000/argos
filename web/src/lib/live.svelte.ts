@@ -1,5 +1,6 @@
 import { auth } from './auth.svelte'
 import type { HostStatus } from './hosts'
+import type { HostContainers } from './containers'
 
 export interface Disk {
   mount: string
@@ -20,7 +21,8 @@ export interface Sample {
 }
 
 type Message =
-  | { type: 'snapshot'; hosts: HostStatus[]; latest?: Record<string, Sample> }
+  | { type: 'snapshot'; hosts: HostStatus[]; latest?: Record<string, Sample>; containers?: HostContainers[] }
+  | { type: 'containers'; containers: HostContainers[] }
   | { type: 'status'; hosts: HostStatus[] }
   | { type: 'sample'; sample: Sample }
 
@@ -31,6 +33,8 @@ class Live {
   state = $state<'connecting' | 'open' | 'closed'>('closed')
   hosts = $state.raw<HostStatus[] | null>(null)
   latest = $state.raw<Record<string, Sample>>({})
+  /** Docker hosts' containers, keyed by host name (null until the snapshot). */
+  containers = $state.raw<Record<string, HostContainers> | null>(null)
   lastMessage = $state(0)
 
   #ws: WebSocket | null = null
@@ -81,7 +85,14 @@ class Live {
         case 'snapshot':
           this.hosts = msg.hosts ?? []
           this.latest = msg.latest ?? {}
+          this.containers = Object.fromEntries((msg.containers ?? []).map((c) => [c.host, { ...c, containers: c.containers ?? [] }]))
           break
+        case 'containers': {
+          const next = { ...(this.containers ?? {}) }
+          for (const c of msg.containers ?? []) next[c.host] = { ...c, containers: c.containers ?? [] }
+          this.containers = next
+          break
+        }
         case 'status':
           this.hosts = msg.hosts ?? []
           break
