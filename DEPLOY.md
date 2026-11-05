@@ -6,7 +6,7 @@
 
 - **Plateforme** : Coolify, sur le VPS Netcup (`152.53.176.13`).
 - **Source Git** : `github.com/fs0ciety7000/argos` (privé), branche de production `main`. Pas de préproduction en V1.
-- **Mode de build** : Dockerfile (`./Dockerfile` : node → go → distroless `nonroot`).
+- **Mode de build** : Dockerfile (`./Dockerfile` : node → go → alpine, utilisateur `argos` (UID 65532)).
 - **Port d'écoute** : `8080`.
 - **Route de santé** : `GET /health` → `200 {"status":"ok"}`.
 
@@ -25,7 +25,7 @@ Les valeurs vivent dans la ressource Coolify et dans `secrets/` (chiffré). Jama
 
 ## Données
 
-- **Volume persistant** : `/data` → base SQLite (`argos.db`, métriques 7 jours) et clés SSH de lecture vers les seedboxes (`/data/ssh/`, mode 0600). Propriétaire : utilisateur `nonroot` (UID 65532).
+- **Volume persistant** : `/data` → base SQLite (`argos.db`, métriques 7 jours) et clés SSH de lecture vers les seedboxes (`/data/ssh/`, mode 0600). Propriétaire : utilisateur `argos` (UID 65532).
 - **Sauvegarde** : copie quotidienne de `/data` (sauvegarde planifiée Coolify ou `sqlite3 .backup`) vers le stockage de backup ; test de restauration à chaque montée de schéma.
 
 ## Domaine

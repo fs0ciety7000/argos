@@ -29,7 +29,7 @@ build:   make build            # build Vite puis binaire bin/argos (front embarq
 ├── docs/brief.md       # objectif et périmètre
 ├── .env.example        # noms des variables, valeurs factices
 ├── secrets/            # secrets chiffrés (sops + age), commitables
-├── Dockerfile          # node → go → distroless, volume /data
+├── Dockerfile          # node → go → alpine (non root), volume /data
 ├── Makefile
 ├── cmd/argos/          # point d'entrée du binaire
 ├── internal/server/    # routes HTTP (/health, API, UI embarquée)
