@@ -20,6 +20,7 @@
 | `ARGOS_DATA_DIR` | exécution | non | dossier des données persistantes (`/data`, défaut de l'image) |
 | `ARGOS_ADMIN_PASSWORD_HASH` | exécution | **oui** | hash argon2id (format PHC) du mot de passe, produit par `argos hash-password`. Contient des `$` : cocher « Is Literal » dans Coolify pour éviter l'interpolation. |
 | `ARGOS_TOTP_SECRET` | exécution | **oui** | secret TOTP base32, produit par `argos totp-init` |
+| `ARGOS_HOSTS` | exécution | non | inventaire JSON : `name`, `kind` (`vps`/`seedbox`), `address`, `port` (22 par défaut), `user`, `docker` (vps seulement). « Is Literal » coché. |
 | `ARGOS_CF_ACCESS_TEAM_DOMAIN` | exécution | non | `cinecode.cloudflareaccess.com` : active la vérification du JWT Cloudflare Access |
 | `ARGOS_CF_ACCESS_AUD` | exécution | non | tag d'audience de l'application Access « Argos (control center) » |
 
@@ -39,8 +40,15 @@ Les valeurs vivent dans la ressource Coolify et dans `secrets/` (chiffré). Jama
 
 ## Données
 
-- **Volume persistant** : `/data` → base SQLite (`argos.db`, métriques 7 jours) et clés SSH de lecture vers les seedboxes (`/data/ssh/`, mode 0600). Propriétaire : utilisateur `argos` (UID 65532).
+- **Volume persistant** : `/data` → base SQLite (`argos.db`, métriques 7 jours) et identité SSH d'Argos + empreintes des hôtes (`/data/ssh/`, dossier 0700, clé privée 0600). Propriétaire : utilisateur `argos` (UID 65532).
 - **Sauvegarde** : copie quotidienne de `/data` (sauvegarde planifiée Coolify ou `sqlite3 .backup`) vers le stockage de backup ; test de restauration à chaque montée de schéma.
+
+## SSH vers les hôtes
+
+- Au premier démarrage, Argos génère sa propre clé ed25519 dans `/data/ssh/`. La clé privée ne quitte jamais le volume ; la clé publique s'affiche dans **Hôtes** : l'ajouter à `~/.ssh/authorized_keys` de l'utilisateur configuré sur chaque hôte.
+- Empreintes des serveurs : enregistrées au premier contact dans `/data/ssh/known_hosts`. Si une empreinte change, Argos refuse la connexion (« clé d'hôte modifiée »), même après « Reconnecter ». Après une réinstallation légitime : retirer la ligne de l'hôte, puis « Reconnecter ».
+- Utilisateur conseillé sur les VPS : `argos`, sans sudo, hors du groupe `docker` tant que les actions Docker ne sont pas livrées (le groupe `docker` équivaut à root).
+- Netcup (même machine qu'Argos) : adresse `152.53.176.13` ; le pare-feu doit laisser le conteneur joindre le port SSH de l'hôte.
 
 ## Domaine
 

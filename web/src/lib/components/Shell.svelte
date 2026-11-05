@@ -1,6 +1,7 @@
 <script lang="ts">
   import { auth } from '../auth.svelte'
   import Logo from './Logo.svelte'
+  import Hosts from './Hosts.svelte'
 
   const sections = ['Vue d’ensemble', 'Hôtes', 'Conteneurs', 'Journaux', 'Stockage']
   let current = $state(sections[0])
@@ -47,11 +48,15 @@
   </header>
 
   <main>
-    <section class="empty">
-      <p class="mono kicker">{current}</p>
-      <h2>Bientôt ici.</h2>
-      <p>Les collecteurs SSH et le flux temps réel arrivent dans la prochaine étape.</p>
-    </section>
+    {#if current === 'Hôtes'}
+      <Hosts />
+    {:else}
+      <section class="empty">
+        <p class="mono kicker">{current}</p>
+        <h2>Bientôt ici.</h2>
+        <p>Les métriques et le flux temps réel arrivent dans une prochaine étape. Les hôtes sont déjà dans « Hôtes ».</p>
+      </section>
+    {/if}
   </main>
 </div>
 
@@ -94,6 +99,7 @@
 
   nav a {
     padding: 6px 12px;
+    white-space: nowrap;
     border-radius: 8px;
     color: var(--text-2);
     text-decoration: none;

@@ -267,10 +267,14 @@ func (p *Pool) loop(ctx context.Context, c *conn) {
 // keepalive pings until the connection dies (returns the cause), the owner
 // asks for a reconnect (returns nil) or ctx ends.
 func (p *Pool) keepalive(ctx context.Context, c *conn, client *ssh.Client) error {
-	t := time.NewTicker(p.opts.Keepalive)
-	defer t.Stop()
 	dead := make(chan error, 1)
 	go func() { dead <- client.Wait() }()
+	// First ping right away so latency is known as soon as we connect.
+	if err := p.ping(ctx, c, client); err != nil {
+		return err
+	}
+	t := time.NewTicker(p.opts.Keepalive)
+	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -283,29 +287,40 @@ func (p *Pool) keepalive(ctx context.Context, c *conn, client *ssh.Client) error
 			}
 			return err
 		case <-t.C:
-			start := time.Now()
-			res := make(chan error, 1)
-			go func() {
-				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-				res <- err
-			}()
-			select {
-			case err := <-res:
-				if err != nil {
-					return fmt.Errorf("keepalive: %w", err)
-				}
-			case <-time.After(p.opts.DialTimeout):
-				return errors.New("keepalive timeout")
-			case <-ctx.Done():
-				return nil
+			if err := p.ping(ctx, c, client); err != nil {
+				return err
 			}
-			now := time.Now()
-			c.mu.Lock()
-			c.status.LastSeen = &now
-			c.status.LatencyMS = float64(now.Sub(start).Microseconds()) / 1000
-			c.mu.Unlock()
 		}
 	}
+}
+
+// ping sends one keepalive and records latency and last-seen time. It
+// returns nil when ctx ends (the caller notices ctx itself).
+func (p *Pool) ping(ctx context.Context, c *conn, client *ssh.Client) error {
+	start := time.Now()
+	res := make(chan error, 1)
+	go func() {
+		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+		res <- err
+	}()
+	timeout := time.NewTimer(p.opts.DialTimeout)
+	defer timeout.Stop()
+	select {
+	case err := <-res:
+		if err != nil {
+			return fmt.Errorf("keepalive: %w", err)
+		}
+	case <-timeout.C:
+		return errors.New("keepalive timeout")
+	case <-ctx.Done():
+		return nil
+	}
+	now := time.Now()
+	c.mu.Lock()
+	c.status.LastSeen = &now
+	c.status.LatencyMS = float64(now.Sub(start).Microseconds()) / 1000
+	c.mu.Unlock()
+	return nil
 }
 
 // wait sleeps for d (forever when d == 0) or until a reconnect is
