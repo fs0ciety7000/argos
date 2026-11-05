@@ -5,19 +5,54 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/fs0ciety7000/argos/internal/auth"
 )
 
-func TestHealth(t *testing.T) {
-	h := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+func newHandler(t *testing.T) http.Handler {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	a, err := auth.New(auth.Config{}, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(logger, a)
+}
 
+func TestHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	newHandler(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	if got, want := rec.Body.String(), `{"status":"ok"}`; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
+	}
+	for _, h := range []string{"Content-Security-Policy", "X-Content-Type-Options", "Referrer-Policy", "X-Frame-Options"} {
+		if rec.Header().Get(h) == "" {
+			t.Errorf("missing security header %s", h)
+		}
+	}
+}
+
+func TestAPIRequiresSession(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newHandler(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/hosts", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestLoginDisabledWithoutConfig(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://argos.test/api/auth/login", strings.NewReader(`{}`))
+	req.Header.Set("Origin", "http://argos.test")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	newHandler(t).ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }
