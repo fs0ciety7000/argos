@@ -23,6 +23,7 @@ type ActionLog interface {
 type Containers struct {
 	Manager ContainerManager
 	Actions ActionLog
+	Logs    http.Handler // WebSocket: GET /api/logs/ws?host=…&container=…
 }
 
 func registerContainers(api *http.ServeMux, c *Containers) {
@@ -48,6 +49,9 @@ func registerContainers(api *http.ServeMux, c *Containers) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		}
 	})
+	if c.Logs != nil {
+		api.Handle("GET /api/logs/ws", c.Logs)
+	}
 	api.HandleFunc("GET /api/actions", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
 		defer cancel()

@@ -28,6 +28,16 @@ func TestGuardScriptRejects(t *testing.T) {
 		{"restart", "a b"},
 		{"restart", "a\nb"},
 		{"restart", strings.Repeat("a", 129)},
+		{"logs"},
+		{"logs", "web"},
+		{"logs", "web", "0"},
+		{"logs", "web", "1001"},
+		{"logs", "web", "-5"},
+		{"logs", "web", "010"},
+		{"logs", "web", "200", "--since=1h"},
+		{"logs", "-f", "200"},
+		{"logs", "a;id", "200"},
+		{"logs", "web", "1e3"},
 	}
 	for _, protected := range []string{"coolify", "coolify-proxy", "coolify-db", "coolify-redis", "coolify-realtime", "coolify-sentinel"} {
 		err := exec.Command("bash", "./argos-docker", "restart", protected).Run()
@@ -41,6 +51,16 @@ func TestGuardScriptRejects(t *testing.T) {
 		var ee *exec.ExitError
 		if !errors.As(err, &ee) || ee.ExitCode() != 64 {
 			t.Errorf("%q: want exit 64, got %v", args, err)
+		}
+	}
+}
+
+func TestGuardScriptAcceptsValidLogs(t *testing.T) {
+	for _, n := range []string{"1", "200", "1000"} {
+		err := exec.Command("bash", "./argos-docker", "logs", "web", n).Run()
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 64 {
+			t.Errorf("logs web %s rejected as usage error", n)
 		}
 	}
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/fs0ciety7000/argos/internal/docker"
 	"github.com/fs0ciety7000/argos/internal/inventory"
 	"github.com/fs0ciety7000/argos/internal/live"
+	"github.com/fs0ciety7000/argos/internal/logstream"
 	"github.com/fs0ciety7000/argos/internal/server"
 	"github.com/fs0ciety7000/argos/internal/sshpool"
 	"github.com/fs0ciety7000/argos/internal/store"
@@ -224,7 +225,13 @@ func serve() error {
 				latest := col.Latest()
 				return liveMessage{Type: "snapshot", Hosts: pool.Statuses(), Latest: latest, Containers: dockerMgr.Snapshot()}
 			}),
-		}, &server.Containers{Manager: dockerMgr, Actions: db}),
+		}, &server.Containers{Manager: dockerMgr, Actions: db, Logs: &logstream.Handler{
+			Streamer:   pool,
+			Known:      dockerMgr.HasContainer,
+			OriginOK:   auth.ValidOrigin,
+			StillValid: authSvc.Valid,
+			Logger:     logger,
+		}}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,

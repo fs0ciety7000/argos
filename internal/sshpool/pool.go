@@ -4,10 +4,12 @@
 package sshpool
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net"
@@ -51,6 +53,8 @@ type Command struct {
 	needsDocker bool
 	// timeout overrides Options.CommandTimeout (a restart takes longer).
 	timeout time.Duration
+	// stream commands are run with Stream, never Run.
+	stream bool
 }
 
 // Name identifies the command in logs.
@@ -86,6 +90,19 @@ var (
 
 // ContainerNameRe matches the names the guard script accepts.
 var ContainerNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+// LogTail is how many past lines a log stream starts with.
+const LogTail = 200
+
+// DockerLogs builds the command that follows one container's logs. Same
+// validation as DockerRestart; the guard script also caps it at one hour.
+func DockerLogs(container string) (Command, error) {
+	if !ContainerNameRe.MatchString(container) {
+		return Command{}, fmt.Errorf("invalid container name %q", truncate(container, 64))
+	}
+	return Command{name: "docker-logs", line: fmt.Sprintf("%s logs '%s' %d", dockerGuard, container, LogTail),
+		needsDocker: true, stream: true, timeout: time.Hour + time.Minute}, nil
+}
 
 // DockerRestart builds the restart command for one container. The name is
 // validated here and again by the guard script; it can contain no shell
@@ -230,51 +247,14 @@ func (p *Pool) Reconnect(name string) error {
 // Run executes a named command on a host and returns its stdout, capped at
 // Options.MaxOutput bytes.
 func (p *Pool) Run(ctx context.Context, name string, cmd Command) ([]byte, error) {
-	c, ok := p.conns[name]
-	if !ok {
-		return nil, ErrUnknownHost
+	if cmd.stream {
+		return nil, errors.New("stream commands must use Stream")
 	}
-	if cmd.line == "" {
-		return nil, errors.New("invalid command")
-	}
-	if cmd.needsDocker && (c.host.Kind != inventory.KindVPS || !c.host.Docker) {
-		return nil, fmt.Errorf("%s on %s: %w", cmd.name, name, ErrNotAllowed)
-	}
-	c.mu.Lock()
-	client := c.client
-	c.mu.Unlock()
-	if client == nil {
-		return nil, ErrNotConnected
-	}
-
-	timeout := p.opts.CommandTimeout
-	if cmd.timeout > 0 {
-		timeout = cmd.timeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := context.WithTimeout(ctx, p.timeout(cmd))
 	defer cancel()
-
-	// NewSession waits for CHANNEL_OPEN with no deadline of its own: a
-	// hostile server could stall it forever. Bound it by the command timeout.
-	type opened struct {
-		sess *ssh.Session
-		err  error
-	}
-	openCh := make(chan opened, 1)
-	go func() {
-		s, err := client.NewSession()
-		openCh <- opened{s, err}
-	}()
-	var sess *ssh.Session
-	select {
-	case o := <-openCh:
-		if o.err != nil {
-			return nil, fmt.Errorf("%s: new session: %w", cmd.name, o.err)
-		}
-		sess = o.sess
-	case <-ctx.Done():
-		_ = client.Close() // unblocks NewSession; the loop will redial
-		return nil, fmt.Errorf("%s: open session: %w", cmd.name, ctx.Err())
+	sess, err := p.open(ctx, name, cmd)
+	if err != nil {
+		return nil, err
 	}
 	defer sess.Close()
 	out := &cappedBuffer{max: p.opts.MaxOutput}
@@ -296,6 +276,107 @@ func (p *Pool) Run(ctx context.Context, name string, cmd Command) ([]byte, error
 		return nil, fmt.Errorf("%s: output larger than %d bytes", cmd.name, p.opts.MaxOutput)
 	}
 	return out.Bytes(), nil
+}
+
+// MaxLineLen caps one streamed line; the rest of the line is dropped.
+const MaxLineLen = 8 << 10
+
+// Stream runs a long-lived command and calls onLine for every output line
+// (without its newline, truncated to MaxLineLen) until the command ends,
+// ctx is cancelled or the command timeout elapses. onLine must not block;
+// it reports whether the line was truncated.
+func (p *Pool) Stream(ctx context.Context, name string, cmd Command, onLine func(line []byte, truncated bool)) error {
+	if !cmd.stream {
+		return errors.New("command is not a stream")
+	}
+	ctx, cancel := context.WithTimeout(ctx, p.timeout(cmd))
+	defer cancel()
+	sess, err := p.open(ctx, name, cmd)
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("%s: %w", cmd.name, err)
+	}
+	if err := sess.Start(cmd.line); err != nil {
+		return fmt.Errorf("%s: %w", cmd.name, err)
+	}
+	stop := context.AfterFunc(ctx, func() {
+		_ = sess.Signal(ssh.SIGKILL)
+		_ = sess.Close() // unblocks the reader
+	})
+	defer stop()
+
+	r := bufio.NewReaderSize(stdout, MaxLineLen)
+	for {
+		line, isPrefix, err := r.ReadLine()
+		if len(line) > 0 || (err == nil && !isPrefix) {
+			truncated := isPrefix
+			onLine(line, truncated)
+			for isPrefix && err == nil { // discard the rest of an oversized line
+				_, isPrefix, err = r.ReadLine()
+			}
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("%s: %w", cmd.name, err)
+		}
+	}
+}
+
+func (p *Pool) timeout(cmd Command) time.Duration {
+	if cmd.timeout > 0 {
+		return cmd.timeout
+	}
+	return p.opts.CommandTimeout
+}
+
+// open checks the command is allowed on the host and opens a session,
+// bounded by ctx: NewSession waits for CHANNEL_OPEN with no deadline of its
+// own, so a hostile server could otherwise stall it forever.
+func (p *Pool) open(ctx context.Context, name string, cmd Command) (*ssh.Session, error) {
+	c, ok := p.conns[name]
+	if !ok {
+		return nil, ErrUnknownHost
+	}
+	if cmd.line == "" {
+		return nil, errors.New("invalid command")
+	}
+	if cmd.needsDocker && (c.host.Kind != inventory.KindVPS || !c.host.Docker) {
+		return nil, fmt.Errorf("%s on %s: %w", cmd.name, name, ErrNotAllowed)
+	}
+	c.mu.Lock()
+	client := c.client
+	c.mu.Unlock()
+	if client == nil {
+		return nil, ErrNotConnected
+	}
+	type opened struct {
+		sess *ssh.Session
+		err  error
+	}
+	openCh := make(chan opened, 1)
+	go func() {
+		s, err := client.NewSession()
+		openCh <- opened{s, err}
+	}()
+	select {
+	case o := <-openCh:
+		if o.err != nil {
+			return nil, fmt.Errorf("%s: new session: %w", cmd.name, o.err)
+		}
+		return o.sess, nil
+	case <-ctx.Done():
+		_ = client.Close() // unblocks NewSession; the loop will redial
+		return nil, fmt.Errorf("%s: open session: %w", cmd.name, ctx.Err())
+	}
 }
 
 func (p *Pool) loop(ctx context.Context, c *conn) {

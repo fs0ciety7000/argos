@@ -117,6 +117,11 @@ func (s *testServer) handle(nc net.Conn) {
 				out := s.outputs[cmd]
 				s.mu.Unlock()
 				_ = req.Reply(true, nil)
+				if out == "__BLOCK__" { // a never-ending stream
+					_, _ = io.WriteString(ch, "first\n")
+					_, _ = io.Copy(io.Discard, ch) // until the client closes
+					return
+				}
 				_, _ = io.WriteString(ch, out)
 				_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 				return
@@ -385,5 +390,71 @@ func TestDockerRestartValidation(t *testing.T) {
 	}
 	if !CmdDockerList.needsDocker || !CmdDockerStats.needsDocker {
 		t.Fatal("docker commands must require docker")
+	}
+}
+
+func TestStream(t *testing.T) {
+	f := newFixture(t, "")
+	srv := startServer(t, "127.0.0.1:0", newHostSigner(t), f.signer.PublicKey())
+	long := strings.Repeat("x", MaxLineLen+500)
+	srv.outputs["lines"] = "one\ntwo\n" + long + "\nthree"
+	srv.outputs["block"] = "__BLOCK__"
+	f.start(t, srv.addr())
+	waitState(t, f.pool, StateConnected)
+
+	var got []string
+	var truncated []bool
+	err := f.pool.Stream(context.Background(), "box", Command{name: "t", line: "lines", stream: true}, func(l []byte, tr bool) {
+		got = append(got, string(l))
+		truncated = append(truncated, tr)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 4 || got[0] != "one" || got[3] != "three" || len(got[2]) != MaxLineLen || !truncated[2] || truncated[0] {
+		t.Fatalf("lines = %d %q…, truncated = %v", len(got), got[:2], truncated)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	first := make(chan struct{}, 1)
+	go func() {
+		done <- f.pool.Stream(ctx, "box", Command{name: "t", line: "block", stream: true}, func([]byte, bool) {
+			select {
+			case first <- struct{}{}:
+			default:
+			}
+		})
+	}()
+	<-first
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled stream returned %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream did not stop on cancel")
+	}
+
+	if _, err := f.pool.Run(context.Background(), "box", Command{name: "t", line: "lines", stream: true}); err == nil {
+		t.Fatal("Run must refuse stream commands")
+	}
+	if err := f.pool.Stream(context.Background(), "box", CmdUname, func([]byte, bool) {}); err == nil {
+		t.Fatal("Stream must refuse non-stream commands")
+	}
+	logs, _ := DockerLogs("web")
+	if err := f.pool.Stream(context.Background(), "box", logs, func([]byte, bool) {}); !errors.Is(err, ErrNotAllowed) {
+		t.Fatalf("docker logs on a non-docker host: %v", err)
+	}
+}
+
+func TestDockerLogsValidation(t *testing.T) {
+	if _, err := DockerLogs("a;id"); err == nil {
+		t.Fatal("invalid name accepted")
+	}
+	c, err := DockerLogs("web")
+	if err != nil || c.line != "sudo -n /usr/local/sbin/argos-docker logs 'web' 200" || !c.stream || !c.needsDocker {
+		t.Fatalf("logs command = %+v %v", c, err)
 	}
 }

@@ -7,15 +7,16 @@
 #   chmod 0440 /etc/sudoers.d/argos && visudo -c
 #
 # The argos user is NOT in the docker group (that would be root). Through
-# sudo it may only run this script, which accepts exactly three actions:
+# sudo it may only run this script, which accepts exactly four actions:
 #   list              containers with a fixed set of fields (never Env, mounts or args)
 #   stats             CPU / memory of running containers
 #   restart <name>    restart one container; strict name validation
+#   logs <name> <n>   follow one container's logs (last n lines, 1-1000), 1 h max
 set -euo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 
-usage() { echo "usage: argos-docker list | stats | restart <name>" >&2; exit 64; }
+usage() { echo "usage: argos-docker list | stats | restart <name> | logs <name> <lines>" >&2; exit 64; }
 
 # Container names: what Docker itself allows, never starting with '-'.
 NAME_RE='^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$'
@@ -33,6 +34,18 @@ FMT='{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},'\
 '"restartCount":{{.RestartCount}},'\
 '"autorestart":{{json (index .Config.Labels "argos.autorestart")}},'\
 '"coolifyName":{{json (index .Config.Labels "coolify.name")}}}'
+
+# resolve <name>: print the full ID of the container named exactly <name>.
+# Docker resolves a reference as full ID, then name, then ID prefix: require
+# an exact NAME match so a name can never target another container.
+resolve() {
+  local resolved id
+  resolved=$(timeout 10 docker inspect --type container --format '{{.Name}} {{.Id}}' -- "$1" 2>/dev/null) || exit 65
+  [ "${resolved%% *}" = "/$1" ] || { echo "argos-docker: no container named $1" >&2; exit 65; }
+  id=${resolved#* }
+  [[ "$id" =~ ^[0-9a-f]{64}$ ]] || exit 65
+  printf '%s' "$id"
+}
 
 [ $# -ge 1 ] || usage
 case "$1" in
@@ -56,13 +69,17 @@ case "$1" in
     [ $# -eq 2 ] || usage
     [[ "$2" =~ $NAME_RE ]] || usage
     [[ "$2" =~ $DENY_RE ]] && { echo "argos-docker: $2 is protected" >&2; exit 65; }
-    # Docker resolves a reference as full ID, then name, then ID prefix:
-    # require an exact NAME match and restart by the full ID it resolved to.
-    resolved=$(timeout 10 docker inspect --type container --format '{{.Name}} {{.Id}}' -- "$2" 2>/dev/null) || exit 65
-    [ "${resolved%% *}" = "/$2" ] || { echo "argos-docker: no container named $2" >&2; exit 65; }
-    id=${resolved#* }
-    [[ "$id" =~ ^[0-9a-f]{64}$ ]] || exit 65
+    id=$(resolve "$2")
     exec timeout 90 docker restart --time 20 -- "$id"
+    ;;
+  logs)
+    [ $# -eq 3 ] || usage
+    [[ "$2" =~ $NAME_RE ]] || usage
+    [[ "$3" =~ ^[1-9][0-9]{0,3}$ ]] && [ "$3" -le 1000 ] || usage
+    id=$(resolve "$2")
+    # stdout and stderr of the container, merged; ends with the SSH session
+    # (SIGPIPE) or after one hour at most.
+    exec timeout 3600 docker logs --follow --timestamps --tail "$3" -- "$id" 2>&1
     ;;
   *)
     usage

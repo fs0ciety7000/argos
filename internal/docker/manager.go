@@ -171,6 +171,22 @@ func (m *Manager) copyView(host string) HostContainers {
 	return v
 }
 
+// HasContainer reports whether name is currently listed on a docker host.
+func (m *Manager) HasContainer(host, name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.state[host]
+	if !ok {
+		return false
+	}
+	for _, c := range st.view.Containers {
+		if c.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Start launches one poller per Docker host.
 func (m *Manager) Start(ctx context.Context) *sync.WaitGroup {
 	var wg sync.WaitGroup

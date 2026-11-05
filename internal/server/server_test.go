@@ -64,7 +64,7 @@ func (fakePool) Statuses() []sshpool.Status { return nil }
 func (fakePool) Reconnect(string) error     { return nil }
 
 func TestHostsAPIRequiresSession(t *testing.T) {
-	for _, path := range []string{"/api/hosts", "/api/ssh/public-key", "/api/metrics?host=a&range=1h", "/api/throughput?range=1h", "/api/storage", "/api/containers", "/api/actions"} {
+	for _, path := range []string{"/api/hosts", "/api/ssh/public-key", "/api/metrics?host=a&range=1h", "/api/throughput?range=1h", "/api/storage", "/api/containers", "/api/actions", "/api/logs/ws?host=a&container=b"} {
 		rec := httptest.NewRecorder()
 		newHandler(t).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusUnauthorized {
