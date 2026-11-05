@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"regexp"
 	"sync"
 	"time"
 
@@ -48,6 +49,8 @@ type Command struct {
 	// needsDocker restricts the command to VPS hosts with docker enabled.
 	// Enforced in Run, so a wrong host name can never reach a seedbox.
 	needsDocker bool
+	// timeout overrides Options.CommandTimeout (a restart takes longer).
+	timeout time.Duration
 }
 
 // Name identifies the command in logs.
@@ -71,6 +74,29 @@ var (
 	CmdMetricsSeedbox = Command{name: "metrics", line: metricsPrefix +
 		`echo @@DF; timeout 8 df -kP "$HOME" 2>/dev/null; true`}
 )
+
+// Docker commands go through the root-owned guard script installed on the
+// VPS (deploy/argos-docker): the argos user is not in the docker group.
+const dockerGuard = "sudo -n /usr/local/sbin/argos-docker"
+
+var (
+	CmdDockerList  = Command{name: "docker-list", line: dockerGuard + " list", needsDocker: true}
+	CmdDockerStats = Command{name: "docker-stats", line: dockerGuard + " stats", needsDocker: true}
+)
+
+// ContainerNameRe matches the names the guard script accepts.
+var ContainerNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+// DockerRestart builds the restart command for one container. The name is
+// validated here and again by the guard script; it can contain no shell
+// metacharacter, so single quotes are enough.
+func DockerRestart(container string) (Command, error) {
+	if !ContainerNameRe.MatchString(container) {
+		return Command{}, fmt.Errorf("invalid container name %q", truncate(container, 64))
+	}
+	return Command{name: "docker-restart", line: dockerGuard + " restart '" + container + "'", needsDocker: true,
+		timeout: 100 * time.Second}, nil
+}
 
 const metricsPrefix = "echo @@STAT; cat /proc/stat; echo @@MEM; cat /proc/meminfo; " +
 	"echo @@LOAD; cat /proc/loadavg; echo @@NET; cat /proc/net/dev; "
@@ -221,7 +247,11 @@ func (p *Pool) Run(ctx context.Context, name string, cmd Command) ([]byte, error
 		return nil, ErrNotConnected
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, p.opts.CommandTimeout)
+	timeout := p.opts.CommandTimeout
+	if cmd.timeout > 0 {
+		timeout = cmd.timeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// NewSession waits for CHANNEL_OPEN with no deadline of its own: a

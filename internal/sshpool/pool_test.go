@@ -372,3 +372,18 @@ func TestKnownHostsWithoutTrailingNewline(t *testing.T) {
 		t.Fatal("world-writable known_hosts must be refused")
 	}
 }
+
+func TestDockerRestartValidation(t *testing.T) {
+	for _, bad := range []string{"", "-f", "a'b", "a;id", "a b", "$(id)", ".x", strings.Repeat("a", 129)} {
+		if _, err := DockerRestart(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+	cmd, err := DockerRestart("web-1")
+	if err != nil || cmd.line != "sudo -n /usr/local/sbin/argos-docker restart 'web-1'" || !cmd.needsDocker {
+		t.Fatalf("restart command = %+v, %v", cmd, err)
+	}
+	if !CmdDockerList.needsDocker || !CmdDockerStats.needsDocker {
+		t.Fatal("docker commands must require docker")
+	}
+}

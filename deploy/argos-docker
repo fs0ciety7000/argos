@@ -1,0 +1,54 @@
+#!/bin/bash
+# argos-docker: the only Docker access Argos has on a VPS.
+#
+# Install as root (see DEPLOY.md):
+#   install -o root -g root -m 0755 argos-docker /usr/local/sbin/argos-docker
+#   echo 'argos ALL=(root) NOPASSWD: /usr/local/sbin/argos-docker' > /etc/sudoers.d/argos
+#   chmod 0440 /etc/sudoers.d/argos && visudo -c
+#
+# The argos user is NOT in the docker group (that would be root). Through
+# sudo it may only run this script, which accepts exactly three actions:
+#   list              containers with a fixed set of fields (never Env, mounts or args)
+#   stats             CPU / memory of running containers
+#   restart <name>    restart one container; strict name validation
+set -euo pipefail
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
+
+usage() { echo "usage: argos-docker list | stats | restart <name>" >&2; exit 64; }
+
+# Container names: what Docker itself allows, never starting with '-'.
+NAME_RE='^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$'
+
+# Fixed inspect template: only these fields ever leave the host. Notably no
+# .Config.Env (secrets), no .Mounts, no .Args.
+FMT='{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},'\
+'"state":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}""{{end}},'\
+'"exitCode":{{.State.ExitCode}},"oomKilled":{{.State.OOMKilled}},'\
+'"startedAt":{{json .State.StartedAt}},"finishedAt":{{json .State.FinishedAt}},'\
+'"restartCount":{{.RestartCount}},'\
+'"autorestart":{{json (index .Config.Labels "argos.autorestart")}},'\
+'"coolifyName":{{json (index .Config.Labels "coolify.name")}}}'
+
+[ $# -ge 1 ] || usage
+case "$1" in
+  list)
+    [ $# -eq 1 ] || usage
+    ids=$(docker ps -aq --no-trunc)
+    [ -n "$ids" ] || exit 0
+    # shellcheck disable=SC2086 # ids are hex, one per line
+    exec timeout 20 docker inspect --format "$FMT" $ids
+    ;;
+  stats)
+    [ $# -eq 1 ] || usage
+    exec timeout 20 docker stats --no-stream --format '{{json .}}'
+    ;;
+  restart)
+    [ $# -eq 2 ] || usage
+    [[ "$2" =~ $NAME_RE ]] || usage
+    exec timeout 90 docker restart --time 20 -- "$2"
+    ;;
+  *)
+    usage
+    ;;
+esac

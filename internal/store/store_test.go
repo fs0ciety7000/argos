@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fs0ciety7000/argos/internal/collector"
+	"github.com/fs0ciety7000/argos/internal/docker"
 )
 
 func open(t *testing.T) *Store {
@@ -128,5 +129,25 @@ func TestParseRange(t *testing.T) {
 		if _, err := ParseRange(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+func TestActionsJournal(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	base := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	for i, ok := range []bool{true, false} {
+		if err := s.LogAction(ctx, docker.Action{TS: base.Add(time.Duration(i) * time.Minute), Host: "vps",
+			Container: "web", Action: "restart", Trigger: "manual", OK: ok, Message: "m"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.RecentActions(ctx, 10)
+	if err != nil || len(got) != 2 || got[0].OK || !got[1].OK || got[0].Container != "web" {
+		t.Fatalf("actions = %+v, %v", got, err)
+	}
+	_ = s.Purge(ctx, base.Add(31*24*time.Hour))
+	if got, _ := s.RecentActions(ctx, 10); len(got) != 0 {
+		t.Fatal("old actions not purged")
 	}
 }

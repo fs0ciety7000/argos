@@ -12,11 +12,13 @@ import (
 	_ "modernc.org/sqlite" // pure-Go driver, no CGO
 
 	"github.com/fs0ciety7000/argos/internal/collector"
+	"github.com/fs0ciety7000/argos/internal/docker"
 )
 
 const (
 	RawRetention    = 24 * time.Hour
 	MinuteRetention = 7 * 24 * time.Hour
+	ActionRetention = 30 * 24 * time.Hour
 )
 
 const schema = `
@@ -32,6 +34,12 @@ CREATE TABLE IF NOT EXISTS samples_1m (
 	load1 REAL NOT NULL, rx_avg REAL, rx_max REAL, tx_avg REAL, tx_max REAL,
 	PRIMARY KEY (host, ts)
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS actions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	ts INTEGER NOT NULL, host TEXT NOT NULL, container TEXT NOT NULL,
+	action TEXT NOT NULL, trigger TEXT NOT NULL, ok INTEGER NOT NULL, message TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS actions_ts ON actions (ts);
 CREATE TABLE IF NOT EXISTS disks (
 	host TEXT NOT NULL, mount TEXT NOT NULL, ts INTEGER NOT NULL,
 	size INTEGER NOT NULL, used INTEGER NOT NULL,
@@ -127,6 +135,7 @@ func (s *Store) Purge(ctx context.Context, now time.Time) error {
 		{`DELETE FROM samples WHERE ts < ?`, raw},
 		{`DELETE FROM samples_1m WHERE ts < ?`, minute},
 		{`DELETE FROM disks WHERE ts < ?`, minute},
+		{`DELETE FROM actions WHERE ts < ?`, now.Add(-ActionRetention).UnixMilli()},
 	} {
 		if _, err := s.db.ExecContext(ctx, q.sql, q.cut); err != nil {
 			return fmt.Errorf("purge: %w", err)
@@ -308,4 +317,44 @@ func ptr(v sql.NullFloat64) *float64 {
 	}
 	f := v.Float64
 	return &f
+}
+
+// LogAction appends an entry to the action journal.
+func (s *Store) LogAction(ctx context.Context, a docker.Action) error {
+	ok := 0
+	if a.OK {
+		ok = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO actions (ts, host, container, action, trigger, ok, message) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		a.TS.UnixMilli(), a.Host, a.Container, a.Action, a.Trigger, ok, a.Message)
+	if err != nil {
+		return fmt.Errorf("log action: %w", err)
+	}
+	return nil
+}
+
+// RecentActions returns the latest journal entries, newest first.
+func (s *Store) RecentActions(ctx context.Context, limit int) ([]docker.Action, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT ts, host, container, action, trigger, ok, message FROM actions ORDER BY ts DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("recent actions: %w", err)
+	}
+	defer rows.Close()
+	out := []docker.Action{}
+	for rows.Next() {
+		var a docker.Action
+		var ts int64
+		var ok int
+		if err := rows.Scan(&ts, &a.Host, &a.Container, &a.Action, &a.Trigger, &ok, &a.Message); err != nil {
+			return nil, err
+		}
+		a.TS, a.OK = time.UnixMilli(ts).UTC(), ok == 1
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }

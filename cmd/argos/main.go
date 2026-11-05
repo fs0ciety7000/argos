@@ -27,6 +27,7 @@ import (
 	"github.com/fs0ciety7000/argos/internal/auth"
 	"github.com/fs0ciety7000/argos/internal/cfaccess"
 	"github.com/fs0ciety7000/argos/internal/collector"
+	"github.com/fs0ciety7000/argos/internal/docker"
 	"github.com/fs0ciety7000/argos/internal/inventory"
 	"github.com/fs0ciety7000/argos/internal/live"
 	"github.com/fs0ciety7000/argos/internal/server"
@@ -193,6 +194,13 @@ func serve() error {
 	col := collector.New(hosts, pool, db, db, func(s collector.Sample) {
 		hub.Publish(liveMessage{Type: "sample", Sample: &s})
 	}, logger, collector.Options{})
+	selfID, _ := os.Hostname() // Docker sets it to the container's short ID
+	if len(selfID) != 12 {
+		selfID = ""
+	}
+	dockerMgr := docker.New(hosts, pool, db, func(hc docker.HostContainers) {
+		hub.Publish(liveMessage{Type: "containers", Containers: []docker.HostContainers{hc}})
+	}, logger, docker.Options{SelfID: selfID, Protected: strings.Split(os.Getenv("ARGOS_PROTECTED_CONTAINERS"), ",")})
 	known := make(map[string]bool, len(hosts))
 	for _, h := range hosts {
 		known[h.Name] = true
@@ -211,9 +219,9 @@ func serve() error {
 			Known: func(h string) bool { return known[h] },
 			Live: hub.Handler(auth.ValidOrigin, authSvc.Valid, func() any {
 				latest := col.Latest()
-				return liveMessage{Type: "snapshot", Hosts: pool.Statuses(), Latest: latest}
+				return liveMessage{Type: "snapshot", Hosts: pool.Statuses(), Latest: latest, Containers: dockerMgr.Snapshot()}
 			}),
-		}),
+		}, &server.Containers{Manager: dockerMgr, Actions: db}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -224,8 +232,10 @@ func serve() error {
 	defer stop()
 	poolDone := pool.Start(ctx)
 	colDone := col.Start(ctx)
+	dockerDone := dockerMgr.Start(ctx)
 	defer func() {
 		stop() // cancel ctx first, or Wait would block on an early return
+		dockerDone.Wait()
 		colDone.Wait()
 		poolDone.Wait()
 	}()
@@ -286,8 +296,9 @@ func accessMiddleware(logger *slog.Logger) (server.Middleware, error) {
 // liveMessage is what the WebSocket sends: a snapshot on connect, then a
 // "sample" per collection and a "status" every few seconds.
 type liveMessage struct {
-	Type   string                      `json:"type"`
-	Hosts  []sshpool.Status            `json:"hosts,omitempty"`
-	Latest map[string]collector.Sample `json:"latest,omitempty"`
-	Sample *collector.Sample           `json:"sample,omitempty"`
+	Type       string                      `json:"type"`
+	Hosts      []sshpool.Status            `json:"hosts,omitempty"`
+	Latest     map[string]collector.Sample `json:"latest,omitempty"`
+	Sample     *collector.Sample           `json:"sample,omitempty"`
+	Containers []docker.HostContainers     `json:"containers,omitempty"`
 }
