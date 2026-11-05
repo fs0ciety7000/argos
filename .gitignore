@@ -35,3 +35,6 @@ bin/
 !web/dist/
 web/dist/*
 !web/dist/.gitkeep
+
+# Argos local data
+data/
