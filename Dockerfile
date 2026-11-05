@@ -7,7 +7,7 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.24-alpine AS api
+FROM golang:1.26.10-alpine AS api
 WORKDIR /src
 COPY go.mod ./
 COPY go.su[m] ./
@@ -19,7 +19,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/argos ./cmd/argos
 # Alpine rather than distroless: Coolify's health check needs wget/curl inside
 # the container. Runs as an unprivileged user; /data is pre-owned so a fresh
 # named volume inherits the right ownership.
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates \
  && addgroup -S -g 65532 argos \
  && adduser -S -D -H -u 65532 -G argos argos \

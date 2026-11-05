@@ -7,7 +7,7 @@
 ## Projet courant
 
 - **Type** : `backend-go` + `web-frontend` (Svelte) + `design-ui` + `deploy` (voir `~/.claude/skills-registry.md`)
-- **Stack** : Go 1.24 (`net/http`, `x/crypto/ssh`, SQLite pur Go `modernc.org/sqlite`) + Svelte 5 / Vite (SPA embarquée dans le binaire via `embed.FS`), WebSocket pour le temps réel, graphes uPlot
+- **Stack** : Go 1.26 (`net/http`, `x/crypto/ssh`, SQLite pur Go `modernc.org/sqlite`) + Svelte 5 / Vite (SPA embarquée dans le binaire via `embed.FS`), WebSocket pour le temps réel, graphes uPlot
 - **Commandes** : `make install`, `make dev-api` + `make dev-web`, `make test`, `make lint`, `make build`
 - **Déploiement** : Coolify (Dockerfile, image Alpine non root), volume `/data`, sous-domaine Cloudflare
 
