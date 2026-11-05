@@ -169,3 +169,49 @@ func TestDiskTrendsDropsStaleMounts(t *testing.T) {
 		t.Fatalf("trends = %+v, %v (stale mount must be dropped)", trends, err)
 	}
 }
+
+func TestDiskGrowth24hAndHistory(t *testing.T) {
+	ctx := context.Background()
+	s := open(t)
+	base := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	ins := func(at time.Time, used uint64) {
+		t.Helper()
+		if err := s.Insert(ctx, collector.Sample{Host: "a", TS: at, MemTotal: 1,
+			Disks: []collector.Disk{{Mount: "/", Size: 1000 << 30, Used: used << 30}}}, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Flat for 5 days, then +100 GiB over the last 24 h.
+	ins(base, 100)
+	ins(base.Add(5*24*time.Hour), 100)
+	ins(base.Add(5*24*time.Hour+time.Hour), 120)
+	ins(base.Add(6*24*time.Hour), 200)
+	now := base.Add(6 * 24 * time.Hour)
+
+	trends, err := s.DiskTrends(ctx, now)
+	if err != nil || len(trends) != 1 {
+		t.Fatalf("trends = %+v, %v", trends, err)
+	}
+	d := trends[0]
+	if got := d.BytesPerDay / (1 << 30); got < 16 || got > 17 { // 100 GiB over 6 days
+		t.Fatalf("7-day rate = %.2f GiB/day", got)
+	}
+	if d.BytesPerDay24h == nil || *d.BytesPerDay24h/(1<<30) < 99 { // ~100 GiB in the last day
+		t.Fatalf("24 h rate = %v", d.BytesPerDay24h)
+	}
+	if d.DaysToFull24h == nil || *d.DaysToFull24h < 7.9 || *d.DaysToFull24h > 8.1 { // 800 GiB left at 100/day
+		t.Fatalf("days to full (24 h) = %v", d.DaysToFull24h)
+	}
+
+	h, err := s.DiskHistory(ctx, "a", "/", Range7d, now)
+	if err != nil || len(h.TS) != 4 || h.Used[3] != 200<<30 || h.Size[0] != 1000<<30 {
+		t.Fatalf("7d history = %+v, %v", h, err)
+	}
+	h, _ = s.DiskHistory(ctx, "a", "/", Range24h, now)
+	if len(h.TS) != 3 {
+		t.Fatalf("24h history has %d points, want 3", len(h.TS))
+	}
+	if h, _ := s.DiskHistory(ctx, "a", "/nope", Range24h, now); len(h.TS) != 0 || h.TS == nil {
+		t.Fatal("unknown mount should give an empty, non-nil series")
+	}
+}

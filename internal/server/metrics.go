@@ -13,6 +13,7 @@ type MetricsStore interface {
 	History(ctx context.Context, host string, r store.Range, now time.Time) (store.Series, error)
 	AggregateThroughput(ctx context.Context, r store.Range, now time.Time) (store.Throughput, error)
 	DiskTrends(ctx context.Context, now time.Time) ([]store.DiskTrend, error)
+	DiskHistory(ctx context.Context, host, mount string, r store.Range, now time.Time) (store.DiskSeries, error)
 }
 
 // Metrics groups the history API and the live stream.
@@ -72,6 +73,27 @@ func registerMetrics(api *http.ServeMux, m *Metrics) {
 			return
 		}
 		writeJSON(w, http.StatusOK, trends)
+	})
+	api.HandleFunc("GET /api/storage/history", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		host, mount := q.Get("host"), q.Get("mount")
+		rng, err := store.ParseRange(q.Get("range"))
+		if err != nil || rng == store.Range1h {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "range must be 24h or 7d"})
+			return
+		}
+		if !m.Known(host) || mount == "" || len(mount) > 256 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown volume"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
+		defer cancel()
+		series, err := m.Store.DiskHistory(ctx, host, mount, rng, time.Now())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "query failed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, series)
 	})
 	if m.Live != nil {
 		api.Handle("GET /api/ws", m.Live)

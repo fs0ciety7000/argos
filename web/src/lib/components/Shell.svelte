@@ -5,6 +5,7 @@
   import Overview from './Overview.svelte'
   import Containers from './Containers.svelte'
   import Logs from './Logs.svelte'
+  import Storage from './Storage.svelte'
   import { nav, SECTIONS } from '../nav.svelte'
   import { onMount } from 'svelte'
   import { live } from '../live.svelte'
@@ -70,6 +71,8 @@
       <Containers />
     {:else if nav.section === 'Journaux'}
       <Logs />
+    {:else if nav.section === 'Stockage'}
+      <Storage />
     {:else}
       <section class="empty">
         <p class="mono kicker">{nav.section}</p>

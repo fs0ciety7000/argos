@@ -268,30 +268,40 @@ type DiskTrend struct {
 	Mount       string   `json:"mount"`
 	Size        int64    `json:"size"`
 	Used        int64    `json:"used"`
-	BytesPerDay float64  `json:"bytesPerDay"`
+	BytesPerDay float64  `json:"bytesPerDay"`          // over the whole window (up to 7 days)
 	DaysToFull  *float64 `json:"daysToFull,omitempty"` // nil when not growing
-	Since       int64    `json:"since"`                // unix seconds of the oldest reading used
+	// Growth over the last 24 h: reacts faster to a big download.
+	BytesPerDay24h *float64 `json:"bytesPerDay24h,omitempty"`
+	DaysToFull24h  *float64 `json:"daysToFull24h,omitempty"`
+	Since          int64    `json:"since"` // unix seconds of the oldest reading used
+	UpdatedAt      int64    `json:"updatedAt"`
 }
 
-// DiskTrends returns, for every host and mount seen in the last 7 days,
-// the latest reading and a linear projection from the oldest one.
+// minSlopeSpan is the history needed before a growth rate means anything.
+const minSlopeSpan = time.Hour
+
+// DiskTrends returns, for every host and mount still reported, the latest
+// reading and linear projections over the window and over the last 24 h.
 func (s *Store) DiskTrends(ctx context.Context, now time.Time) ([]DiskTrend, error) {
 	since := now.Add(-MinuteRetention).UnixMilli()
+	day := now.Add(-24 * time.Hour).UnixMilli()
 	rows, err := s.db.QueryContext(ctx, `
 		WITH bounds AS (
-			SELECT host, mount, MIN(ts) AS t0, MAX(ts) AS t1 FROM disks WHERE ts >= ? GROUP BY host, mount
+			SELECT host, mount, MIN(ts) AS t0, MAX(ts) AS t1, MIN(CASE WHEN ts >= ? THEN ts END) AS t24
+			FROM disks WHERE ts >= ? GROUP BY host, mount
 		), latest AS (
 			SELECT host, MAX(ts) AS t FROM disks WHERE ts >= ? GROUP BY host
 		)
-		SELECT b.host, b.mount, b.t0, b.t1, f.used, l.size, l.used
+		SELECT b.host, b.mount, b.t0, b.t1, f.used, l.size, l.used, b.t24, d.used
 		FROM bounds b
 		JOIN disks f ON f.host = b.host AND f.mount = b.mount AND f.ts = b.t0
 		JOIN disks l ON l.host = b.host AND l.mount = b.mount AND l.ts = b.t1
+		LEFT JOIN disks d ON d.host = b.host AND d.mount = b.mount AND d.ts = b.t24
 		JOIN latest x ON x.host = b.host
 		-- Only mounts still reported recently: a mount replaced (df -> quota)
 		-- or unmounted must not linger for 7 days and be counted twice.
 		WHERE b.t1 >= x.t - 600000
-		ORDER BY b.host, b.mount`, since, since)
+		ORDER BY b.host, b.mount`, day, since, since)
 	if err != nil {
 		return nil, fmt.Errorf("disk trends: %w", err)
 	}
@@ -300,19 +310,72 @@ func (s *Store) DiskTrends(ctx context.Context, now time.Time) ([]DiskTrend, err
 	for rows.Next() {
 		var d DiskTrend
 		var t0, t1, firstUsed int64
-		if err := rows.Scan(&d.Host, &d.Mount, &t0, &t1, &firstUsed, &d.Size, &d.Used); err != nil {
+		var t24, used24 sql.NullInt64
+		if err := rows.Scan(&d.Host, &d.Mount, &t0, &t1, &firstUsed, &d.Size, &d.Used, &t24, &used24); err != nil {
 			return nil, err
 		}
-		d.Since = t0 / 1000
-		// Need at least an hour of history for a meaningful slope.
-		if span := float64(t1-t0) / 86_400_000; t1-t0 >= 3_600_000 {
-			d.BytesPerDay = float64(d.Used-firstUsed) / span
-			if d.BytesPerDay > 0 && d.Size > d.Used {
-				days := float64(d.Size-d.Used) / d.BytesPerDay
-				d.DaysToFull = &days
+		d.Since, d.UpdatedAt = t0/1000, t1/1000
+		if rate, ok := slope(firstUsed, d.Used, t0, t1); ok {
+			d.BytesPerDay = rate
+			d.DaysToFull = daysToFull(d.Size, d.Used, rate)
+		}
+		if t24.Valid && used24.Valid {
+			if rate, ok := slope(used24.Int64, d.Used, t24.Int64, t1); ok {
+				d.BytesPerDay24h = &rate
+				d.DaysToFull24h = daysToFull(d.Size, d.Used, rate)
 			}
 		}
 		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// slope returns bytes per day between two readings (timestamps in ms).
+func slope(usedA, usedB, tA, tB int64) (float64, bool) {
+	if tB-tA < minSlopeSpan.Milliseconds() {
+		return 0, false
+	}
+	return float64(usedB-usedA) / (float64(tB-tA) / 86_400_000), true
+}
+
+func daysToFull(size, used int64, perDay float64) *float64 {
+	if perDay <= 0 || size <= used {
+		return nil
+	}
+	d := float64(size-used) / perDay
+	return &d
+}
+
+// DiskSeries is one volume's fill history, column-oriented for uPlot.
+type DiskSeries struct {
+	TS   []int64 `json:"ts"` // unix seconds
+	Used []int64 `json:"used"`
+	Size []int64 `json:"size"`
+}
+
+// DiskHistory returns a volume's readings: one per minute over 24 h,
+// 10-minute averages over 7 days.
+func (s *Store) DiskHistory(ctx context.Context, host, mount string, r Range, now time.Time) (DiskSeries, error) {
+	since := now.Add(-r.window()).UnixMilli()
+	q := `SELECT ts, used, size FROM disks WHERE host = ? AND mount = ? AND ts >= ? ORDER BY ts`
+	if r == Range7d {
+		q = `SELECT (ts / 600000) * 600000 AS b, CAST(AVG(used) AS INTEGER), MAX(size)
+			FROM disks WHERE host = ? AND mount = ? AND ts >= ? GROUP BY b ORDER BY b`
+	}
+	rows, err := s.db.QueryContext(ctx, q, host, mount, since)
+	if err != nil {
+		return DiskSeries{}, fmt.Errorf("disk history: %w", err)
+	}
+	defer rows.Close()
+	out := DiskSeries{TS: []int64{}, Used: []int64{}, Size: []int64{}}
+	for rows.Next() {
+		var ts, used, size int64
+		if err := rows.Scan(&ts, &used, &size); err != nil {
+			return DiskSeries{}, err
+		}
+		out.TS = append(out.TS, ts/1000)
+		out.Used = append(out.Used, used)
+		out.Size = append(out.Size, size)
 	}
 	return out, rows.Err()
 }
