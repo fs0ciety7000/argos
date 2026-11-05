@@ -53,7 +53,7 @@ Les valeurs vivent dans la ressource Coolify et dans `secrets/` (chiffré). Jama
 
 ## Docker sur les VPS (script gardien)
 
-Argos ne parle à Docker qu'à travers `deploy/argos-docker`, un script appartenant à root qui n'accepte que `list` (champs fixes, jamais l'environnement ni les volumes), `stats` et `restart <nom>` (nom exact, cœur de Coolify refusé, redémarrage par ID complet). Installation sur chaque VPS Docker, en root :
+Argos ne parle à Docker qu'à travers `deploy/argos-docker`, un script appartenant à root qui n'accepte que `list` (champs fixes, jamais l'environnement ni les volumes), `stats`, `restart <nom>` (nom exact, cœur de Coolify refusé, redémarrage par ID complet) et `logs <nom> <1-1000>` (suivi des logs, 1 h max, 6 flux simultanés max, s'arrête à la fermeture du canal SSH ; logs du cœur de Coolify refusés car ils peuvent contenir des jetons). **Après chaque mise à jour du script dans le dépôt, le réinstaller sur les VPS** (même commande `install`, la ligne sudoers ne change pas). Installation sur chaque VPS Docker, en root :
 
 ```bash
 install -o root -g root -m 0755 argos-docker /usr/local/sbin/argos-docker
