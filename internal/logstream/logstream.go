@@ -209,6 +209,8 @@ func reason(err error) string {
 		return "ended" // container stopped or logs closed
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout" // one-hour cap
+	case errors.Is(err, context.Canceled):
+		return "viewer-left"
 	case errors.Is(err, sshpool.ErrNotConnected):
 		return "not-connected"
 	default:
