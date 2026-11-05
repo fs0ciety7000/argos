@@ -98,9 +98,9 @@ func (c *Collector) Start(ctx context.Context) *sync.WaitGroup {
 }
 
 func (c *Collector) poll(ctx context.Context, h inventory.Host) {
-	every, cmd := c.opts.VPSEvery, sshpool.CmdMetricsVPS
+	every, cmd, diskCap := c.opts.VPSEvery, sshpool.CmdMetricsVPS, maxDisks
 	if h.Kind == inventory.KindSeedbox {
-		every, cmd = c.opts.SeedboxEvery, sshpool.CmdMetricsSeedbox
+		every, cmd, diskCap = c.opts.SeedboxEvery, sshpool.CmdMetricsSeedbox, 1
 	}
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -124,7 +124,7 @@ func (c *Collector) poll(ctx context.Context, h inventory.Host) {
 			}
 			continue
 		}
-		raw, err := Parse(out)
+		raw, err := ParseLimit(out, diskCap)
 		if err != nil {
 			if time.Since(lastWarn) > 5*time.Minute {
 				c.logger.Warn("metrics output not understood", "host", h.Name, "err", err)

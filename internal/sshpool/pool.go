@@ -60,10 +60,12 @@ var (
 	CmdMeminfo = Command{name: "meminfo", line: "cat /proc/meminfo"}
 
 	// CmdMetricsVPS reads every metric in one session. Sections are framed
-	// by fixed markers; df skips pseudo filesystems and is bounded by
-	// timeout so a hung mount cannot stall the session.
+	// by fixed markers; df skips pseudo and network filesystems (a hung NFS
+	// or rclone mount would leave unkillable df processes behind) and is
+	// bounded by timeout.
 	CmdMetricsVPS = Command{name: "metrics", line: metricsPrefix +
-		"echo @@DF; timeout 8 df -kP -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs 2>/dev/null; true"}
+		"echo @@DF; timeout 8 df -kP -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs " +
+		"-x nfs -x nfs4 -x cifs -x smb3 -x fuse.rclone -x fuse.sshfs 2>/dev/null; true"}
 	// CmdMetricsSeedbox is the same, but df only covers $HOME: a shared box
 	// lists dozens of unrelated mounts.
 	CmdMetricsSeedbox = Command{name: "metrics", line: metricsPrefix +

@@ -7,8 +7,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Raw is one parsed reading of a host. Counters (CPU, network) only make
@@ -32,10 +35,23 @@ type Disk struct {
 	Used  uint64 `json:"used"`
 }
 
-const maxDisks = 64
+// Output comes from remote hosts, including shared seedboxes whose root is
+// a third party: every value is bounded before it reaches the database or
+// the JSON encoder.
+const (
+	maxDisks      = 16
+	maxMountLen   = 256
+	maxKiB        = math.MaxInt64 / 1024
+	maxLoad       = 1e6
+	maxQuotedSpan = 64
+)
 
-// Parse reads the output of sshpool.CmdMetrics*.
-func Parse(out []byte) (Raw, error) {
+// Parse reads the output of sshpool.CmdMetrics*. maxDisks caps the number
+// of filesystems kept (1 for a seedbox, whose df only covers $HOME).
+func Parse(out []byte) (Raw, error) { return ParseLimit(out, maxDisks) }
+
+// ParseLimit is Parse with an explicit disk cap.
+func ParseLimit(out []byte, diskCap int) (Raw, error) {
 	r := Raw{Net: map[string]NetCounters{}}
 	var section string
 	seen := map[string]bool{}
@@ -59,7 +75,7 @@ func Parse(out []byte) (Raw, error) {
 		case "NET":
 			r.parseNet(line)
 		case "DF":
-			r.parseDF(line)
+			r.parseDF(line, min(diskCap, maxDisks))
 		}
 		if err != nil {
 			return Raw{}, fmt.Errorf("%s: %w", strings.ToLower(section), err)
@@ -89,7 +105,7 @@ func (r *Raw) parseStat(line string) error {
 	for _, s := range f[1:] {
 		v, err := strconv.ParseUint(s, 10, 64)
 		if err != nil {
-			return fmt.Errorf("bad cpu field %q", s)
+			return fmt.Errorf("bad cpu field %q", clip(s))
 		}
 		vals = append(vals, v)
 	}
@@ -115,7 +131,7 @@ func (r *Raw) parseMem(line string) {
 		return
 	}
 	v, err := strconv.ParseUint(f[1], 10, 64)
-	if err != nil {
+	if err != nil || v > maxKiB {
 		return
 	}
 	switch f[0] {
@@ -132,8 +148,10 @@ func (r *Raw) parseLoad(line string) error {
 		return nil
 	}
 	v, err := strconv.ParseFloat(f[0], 64)
-	if err != nil {
-		return fmt.Errorf("bad load %q", f[0])
+	// ParseFloat accepts "NaN" and "Inf", which json.Marshal then refuses:
+	// one hostile value would break the live stream for everyone.
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v > maxLoad {
+		return fmt.Errorf("bad load %q", clip(f[0]))
 	}
 	r.Load1 = v
 	return nil
@@ -167,21 +185,44 @@ func (r *Raw) parseNet(line string) {
 }
 
 // "Filesystem 1024-blocks Used Available Capacity Mounted on"
-func (r *Raw) parseDF(line string) {
+func (r *Raw) parseDF(line string, diskCap int) {
 	f := strings.Fields(line)
-	if len(f) < 6 || f[0] == "Filesystem" || len(r.Disks) >= maxDisks {
+	if len(f) < 6 || f[0] == "Filesystem" || len(r.Disks) >= diskCap {
 		return
 	}
 	size, err1 := strconv.ParseUint(f[1], 10, 64)
 	used, err2 := strconv.ParseUint(f[2], 10, 64)
-	if err1 != nil || err2 != nil || size == 0 {
+	if err1 != nil || err2 != nil || size == 0 || size > maxKiB || used > size {
 		return
 	}
 	mount := strings.Join(f[5:], " ")
+	if !validMount(mount) {
+		return
+	}
 	for _, d := range r.Disks {
 		if d.Mount == mount {
 			return
 		}
 	}
 	r.Disks = append(r.Disks, Disk{Mount: mount, Size: size * 1024, Used: used * 1024})
+}
+
+func validMount(m string) bool {
+	if m == "" || len(m) > maxMountLen || !utf8.ValidString(m) {
+		return false
+	}
+	for _, r := range m {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// clip bounds host-supplied text quoted in errors and logs.
+func clip(s string) string {
+	if len(s) <= maxQuotedSpan {
+		return s
+	}
+	return s[:maxQuotedSpan] + "…"
 }

@@ -439,3 +439,17 @@ func TestCurrentCode(t *testing.T) {
 		t.Fatalf("left = %v, want 5s", left)
 	}
 }
+
+func TestPeekDoesNotRefreshIdle(t *testing.T) {
+	now := time.Unix(0, 0)
+	s := NewSessions(time.Hour, 10*time.Minute)
+	s.now = func() time.Time { return now }
+	tok, _, _ := s.Create()
+	for range 3 { // a WebSocket rechecking every few minutes
+		now = now.Add(4 * time.Minute)
+		s.Peek(tok)
+	}
+	if s.Peek(tok) {
+		t.Fatal("Peek kept an idle session alive")
+	}
+}

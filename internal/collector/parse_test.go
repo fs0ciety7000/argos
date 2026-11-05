@@ -1,6 +1,8 @@
 package collector
 
 import (
+	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -103,5 +105,41 @@ func TestCompute(t *testing.T) {
 	s = Compute("box", t0.Add(10*time.Second), reset, &cur, t0.Add(5*time.Second))
 	if s.CPU != -1 || s.RxBps != -1 {
 		t.Fatalf("reset should give unknown values: %+v", s)
+	}
+}
+
+func TestParseHostileOutput(t *testing.T) {
+	for _, load := range []string{"NaN", "Inf", "+Infinity", "-inf", "-1", "1e400"} {
+		in := strings.Replace(fixture, "0.42 0.37", load+" 0.37", 1)
+		if _, err := Parse([]byte(in)); err == nil {
+			t.Errorf("load %q accepted", load)
+		}
+	}
+
+	var df strings.Builder
+	df.WriteString("@@DF\nFilesystem 1024-blocks Used Available Capacity Mounted on\n")
+	df.WriteString("/dev/x 100 10 90 10% /" + strings.Repeat("a", 300) + "\n") // too long
+	df.WriteString("/dev/x 100 10 90 10% /bad\x07bell\n")                      // control char
+	df.WriteString("/dev/x 100 200 0 100% /usedbig\n")                         // used > size
+	df.WriteString("/dev/x 99999999999999999 1 1 1% /huge\n")                  // overflow on *1024
+	for i := range 40 {
+		df.WriteString(fmt.Sprintf("/dev/x 100 10 90 10%% /m%d\n", i))
+	}
+	base := fixture[:strings.Index(fixture, "@@DF")]
+	r, err := Parse([]byte(base + df.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Disks) != maxDisks || r.Disks[0].Mount != "/m0" {
+		t.Fatalf("disks = %d, first %q (hostile lines must be skipped, list capped)", len(r.Disks), r.Disks[0].Mount)
+	}
+	if r, _ := ParseLimit([]byte(base+df.String()), 1); len(r.Disks) != 1 {
+		t.Fatalf("seedbox cap: %d disks", len(r.Disks))
+	}
+
+	// Whatever survives parsing must always encode (the live stream relies on it).
+	s := Compute("box", time.Now(), r, nil, time.Time{})
+	if _, err := json.Marshal(s); err != nil {
+		t.Fatalf("sample does not encode: %v", err)
 	}
 }

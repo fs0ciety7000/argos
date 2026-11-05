@@ -58,6 +58,17 @@ func (s *Sessions) Create() (string, time.Time, error) {
 
 // Validate reports whether token is a live session and refreshes its idle timer.
 func (s *Sessions) Validate(token string) (expires time.Time, ok bool) {
+	return s.check(token, true)
+}
+
+// Peek is Validate without refreshing the idle timer: a background
+// connection (WebSocket) must not keep an abandoned session alive.
+func (s *Sessions) Peek(token string) bool {
+	_, ok := s.check(token, false)
+	return ok
+}
+
+func (s *Sessions) check(token string, touch bool) (expires time.Time, ok bool) {
 	if token == "" {
 		return time.Time{}, false
 	}
@@ -74,7 +85,9 @@ func (s *Sessions) Validate(token string) (expires time.Time, ok bool) {
 		delete(s.m, key)
 		return time.Time{}, false
 	}
-	sess.lastSeen = now
+	if touch {
+		sess.lastSeen = now
+	}
 	return sess.created.Add(s.ttl), true
 }
 

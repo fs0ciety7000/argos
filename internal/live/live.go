@@ -18,7 +18,7 @@ const (
 	clientBuffer = 32
 	writeTimeout = 10 * time.Second
 	pingEvery    = 30 * time.Second
-	recheckEvery = time.Minute
+	recheckEvery = 15 * time.Second
 )
 
 // ErrTooManyClients is returned when the hub is full.
@@ -112,7 +112,12 @@ func (h *Hub) Handler(originOK func(*http.Request) bool, stillValid func(*http.R
 		ctx := conn.CloseRead(r.Context())
 
 		first, err := json.Marshal(snapshot())
-		if err != nil || write(ctx, conn, first) != nil {
+		if err != nil {
+			// Defence in depth: a bad value must not kill the stream.
+			h.logger.Error("encode live snapshot", "err", err)
+			first = []byte(`{"type":"snapshot"}`)
+		}
+		if write(ctx, conn, first) != nil {
 			return
 		}
 		ping := time.NewTicker(pingEvery)
