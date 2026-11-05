@@ -29,6 +29,13 @@ func TestGuardScriptRejects(t *testing.T) {
 		{"restart", "a\nb"},
 		{"restart", strings.Repeat("a", 129)},
 	}
+	for _, protected := range []string{"coolify", "coolify-proxy", "coolify-db", "coolify-redis", "coolify-realtime", "coolify-sentinel"} {
+		err := exec.Command("bash", "./argos-docker", "restart", protected).Run()
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 65 {
+			t.Errorf("%s: want exit 65 (protected), got %v", protected, err)
+		}
+	}
 	for _, args := range cases {
 		err := exec.Command("bash", append([]string{"./argos-docker"}, args...)...).Run()
 		var ee *exec.ExitError
@@ -39,7 +46,7 @@ func TestGuardScriptRejects(t *testing.T) {
 }
 
 func TestGuardScriptAcceptsValidNames(t *testing.T) {
-	for _, name := range []string{"web", "coolify-proxy", "app_1.web-2", "mgrx66slhilnqavtdqs9a9fn-012345"} {
+	for _, name := range []string{"web", "coolify-app", "app_1.web-2", "mgrx66slhilnqavtdqs9a9fn-012345"} {
 		err := exec.Command("bash", "./argos-docker", "restart", name).Run()
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && ee.ExitCode() == 64 {

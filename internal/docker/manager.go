@@ -75,17 +75,26 @@ type Options struct {
 }
 
 type autoState struct {
-	seen     int         // consecutive polls seen failing
-	attempts []time.Time // within the last hour
-	next     time.Time   // earliest next attempt
-	gaveUp   bool
+	seen         int         // consecutive polls seen failing
+	attempts     []time.Time // within the last hour
+	next         time.Time   // earliest next attempt
+	gaveUp       bool        // budget exhausted: stays off until healthy for an hour or a manual restart
+	healthySince time.Time
 }
+
+// autoResetAfter is how long a container must stay healthy before a
+// previous give-up is forgotten.
+const autoResetAfter = time.Hour
+
+// maxConcurrentRestarts per host: bounds SSH sessions and load.
+const maxConcurrentRestarts = 2
 
 type hostState struct {
 	view  HostContainers
 	stats map[string]Stat
 	busy  map[string]bool
 	auto  map[string]*autoState
+	slots chan struct{}
 }
 
 // Manager polls Docker hosts and performs restarts.
@@ -97,6 +106,7 @@ type Manager struct {
 	opts      Options
 	hosts     []inventory.Host
 	protected map[string]bool
+	prefixes  []string // protected name prefixes ("name*" entries)
 	refresh   map[string]chan struct{}
 
 	mu    sync.Mutex
@@ -120,7 +130,12 @@ func New(all []inventory.Host, runner Runner, journal Journal, publish func(Host
 		m.protected[name] = true
 	}
 	for _, name := range opts.Protected {
-		if name = strings.TrimSpace(name); name != "" {
+		name = strings.TrimSpace(name)
+		switch {
+		case strings.HasSuffix(name, "*") && len(name) > 1:
+			// Coolify renames app containers on every deploy: protect by prefix.
+			m.prefixes = append(m.prefixes, strings.TrimSuffix(name, "*"))
+		case name != "":
 			m.protected[name] = true
 		}
 	}
@@ -131,7 +146,7 @@ func New(all []inventory.Host, runner Runner, journal Journal, publish func(Host
 		m.hosts = append(m.hosts, h)
 		m.refresh[h.Name] = make(chan struct{}, 1)
 		m.state[h.Name] = &hostState{view: HostContainers{Host: h.Name, Containers: []Container{}},
-			busy: map[string]bool{}, auto: map[string]*autoState{}}
+			busy: map[string]bool{}, auto: map[string]*autoState{}, slots: make(chan struct{}, maxConcurrentRestarts)}
 	}
 	return m
 }
@@ -149,7 +164,10 @@ func (m *Manager) Snapshot() []HostContainers {
 
 func (m *Manager) copyView(host string) HostContainers {
 	v := m.state[host].view
-	v.Containers = append([]Container(nil), v.Containers...)
+	// make+copy, not append(nil, ...): an empty list must encode as [] not null.
+	cs := make([]Container, len(v.Containers))
+	copy(cs, v.Containers)
+	v.Containers = cs
 	return v
 }
 
@@ -212,7 +230,7 @@ func (m *Manager) refreshList(ctx context.Context, host string) {
 	st := m.state[host]
 	for i := range list {
 		c := &list[i]
-		c.Protected = m.protected[c.Name] || (m.opts.SelfID != "" && c.ID == m.opts.SelfID)
+		c.Protected = m.isProtected(c)
 		if s, ok := st.stats[c.Name]; ok && c.State == "running" {
 			cpu, mem, lim := s.CPU, s.Mem, s.MemLimit
 			c.CPU, c.Mem, c.MemLimit = &cpu, &mem, &lim
@@ -259,6 +277,18 @@ func (m *Manager) refreshStats(ctx context.Context, host string) {
 	m.publish(v)
 }
 
+func (m *Manager) isProtected(c *Container) bool {
+	if m.protected[c.Name] || (m.opts.SelfID != "" && c.ID == m.opts.SelfID) {
+		return true
+	}
+	for _, p := range m.prefixes {
+		if strings.HasPrefix(c.Name, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // autoCandidatesLocked updates per-container failure tracking and returns
 // the containers due for an automatic restart.
 func (m *Manager) autoCandidatesLocked(st *hostState, now time.Time) []string {
@@ -271,7 +301,14 @@ func (m *Manager) autoCandidatesLocked(st *hostState, now time.Time) []string {
 		eligible := c.AutoRestart && !c.Protected && c.Failing && c.State != "restarting"
 		if !eligible {
 			if a != nil && !c.Failing {
-				a.seen, a.gaveUp = 0, false
+				a.seen = 0
+				// A crash loop passes through "running": only a full hour of
+				// health forgets a give-up.
+				if a.healthySince.IsZero() {
+					a.healthySince = now
+				} else if a.gaveUp && now.Sub(a.healthySince) >= autoResetAfter {
+					a.gaveUp = false
+				}
 			}
 			continue
 		}
@@ -280,6 +317,10 @@ func (m *Manager) autoCandidatesLocked(st *hostState, now time.Time) []string {
 			st.auto[c.Name] = a
 		}
 		a.seen++
+		a.healthySince = time.Time{}
+		if a.gaveUp {
+			continue
+		}
 		kept := a.attempts[:0]
 		for _, t := range a.attempts {
 			if now.Sub(t) < time.Hour {
@@ -382,11 +423,16 @@ func (m *Manager) begin(host, name string) (sshpool.Command, *hostState, error) 
 
 // finish runs the restart, clears the busy flag and journals the outcome.
 func (m *Manager) finish(ctx context.Context, host, name, trigger string, cmd sshpool.Command, st *hostState) error {
+	st.slots <- struct{}{} // at most maxConcurrentRestarts per host
 	m.logger.Info("restarting container", "host", host, "container", name, "trigger", trigger)
 	_, runErr := m.runner.Run(context.WithoutCancel(ctx), host, cmd)
+	<-st.slots
 
 	m.mu.Lock()
 	delete(st.busy, name)
+	if a := st.auto[name]; a != nil && trigger == "manual" {
+		*a = autoState{} // the owner took over: fresh auto-restart budget
+	}
 	m.mu.Unlock()
 
 	a := Action{TS: time.Now(), Container: name, Action: "restart", Trigger: trigger, OK: runErr == nil}

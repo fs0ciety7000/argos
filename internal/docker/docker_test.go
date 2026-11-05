@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -137,6 +138,9 @@ func TestManagerOnlyDockerHosts(t *testing.T) {
 	if len(snap) != 1 || snap[0].Host != "vps" {
 		t.Fatalf("snapshot = %+v", snap)
 	}
+	if b, _ := json.Marshal(snap[0]); !strings.Contains(string(b), `"containers":[]`) {
+		t.Fatalf("empty list must encode as []: %s", b)
+	}
 	if err := m.Restart(context.Background(), "box", "web"); !errors.Is(err, ErrNotDockerHost) {
 		t.Fatalf("seedbox restart: %v", err)
 	}
@@ -266,4 +270,58 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("condition not met")
+}
+
+func TestGiveUpIsSticky(t *testing.T) {
+	r := &fakeRunner{list: line("web", "exited", "", 1, false, "true")}
+	m := newManager(r, &fakeJournal{})
+	st := m.state["vps"]
+	now := time.Now()
+	m.mu.Lock()
+	m.state["vps"].view.Containers, _ = ParseList([]byte(r.list))
+	st.auto["web"] = &autoState{seen: 5, gaveUp: true,
+		attempts: []time.Time{now.Add(-2 * time.Hour), now.Add(-2 * time.Hour), now.Add(-2 * time.Hour)}}
+	due := m.autoCandidatesLocked(st, now) // attempts aged out, but gave up
+	m.mu.Unlock()
+	if len(due) != 0 {
+		t.Fatal("restarted after giving up")
+	}
+	// A short "running" blip must not reset the give-up.
+	m.mu.Lock()
+	m.state["vps"].view.Containers, _ = ParseList([]byte(line("web", "running", "", 0, false, "true")))
+	m.autoCandidatesLocked(st, now)
+	m.state["vps"].view.Containers, _ = ParseList([]byte(r.list))
+	due = m.autoCandidatesLocked(st, now.Add(time.Minute))
+	m.mu.Unlock()
+	if len(due) != 0 {
+		t.Fatal("crash loop blip reset the give-up")
+	}
+	// An hour of health does.
+	m.mu.Lock()
+	m.state["vps"].view.Containers, _ = ParseList([]byte(line("web", "running", "", 0, false, "true")))
+	m.autoCandidatesLocked(st, now.Add(2*time.Minute))
+	m.autoCandidatesLocked(st, now.Add(63*time.Minute))
+	gaveUp := st.auto["web"].gaveUp
+	m.mu.Unlock()
+	if gaveUp {
+		t.Fatal("give-up not forgotten after an hour of health")
+	}
+}
+
+func TestPrefixProtection(t *testing.T) {
+	r := &fakeRunner{list: line("mgrx66slhilnqavtdqs9a9fn-110021", "running", "", 0, false, "")}
+	m := New(hosts, r, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Options{ListEvery: time.Hour, StatsEvery: time.Hour, Protected: []string{"mgrx66slhilnqavtdqs9a9fn-*", " "}})
+	m.refreshList(context.Background(), "vps")
+	if !m.Snapshot()[0].Containers[0].Protected {
+		t.Fatal("prefix protection not applied")
+	}
+}
+
+func TestParseRejectsFormatChars(t *testing.T) {
+	l := strings.Replace(line("web", "running", "", 0, false, ""), `"coolifyName":"app"`, `"coolifyName":"ad‮min"`, 1)
+	list, _ := ParseList([]byte(l))
+	if len(list) != 1 || list[0].App != "" {
+		t.Fatalf("bidi override in app name must be dropped: %+v", list)
+	}
 }

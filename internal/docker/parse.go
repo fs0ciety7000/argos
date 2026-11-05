@@ -204,7 +204,9 @@ func clean(s string, maxLen int) bool {
 		return false
 	}
 	for _, r := range s {
-		if unicode.IsControl(r) {
+		// Cc (control) and Cf (format: bidi overrides, zero-width): a
+		// container could otherwise spoof the names shown in the UI.
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return false
 		}
 	}

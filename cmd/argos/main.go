@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -195,7 +196,9 @@ func serve() error {
 		hub.Publish(liveMessage{Type: "sample", Sample: &s})
 	}, logger, collector.Options{})
 	selfID, _ := os.Hostname() // Docker sets it to the container's short ID
-	if len(selfID) != 12 {
+	if !regexp.MustCompile(`^[0-9a-f]{12}$`).MatchString(selfID) {
+		logger.Warn("cannot identify Argos' own container from its hostname: protect it with ARGOS_PROTECTED_CONTAINERS",
+			"hostname_is_container_id", false)
 		selfID = ""
 	}
 	dockerMgr := docker.New(hosts, pool, db, func(hc docker.HostContainers) {

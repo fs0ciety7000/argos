@@ -20,6 +20,10 @@ usage() { echo "usage: argos-docker list | stats | restart <name>" >&2; exit 64;
 # Container names: what Docker itself allows, never starting with '-'.
 NAME_RE='^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$'
 
+# Never restartable, even if Argos is compromised: Coolify's core (and the
+# proxy every app, Argos included, goes through).
+DENY_RE='^coolify(-proxy|-db|-redis|-realtime|-sentinel)?$'
+
 # Fixed inspect template: only these fields ever leave the host. Notably no
 # .Config.Env (secrets), no .Mounts, no .Args.
 FMT='{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},'\
@@ -34,19 +38,31 @@ FMT='{"id":{{json .Id}},"name":{{json .Name}},"image":{{json .Config.Image}},'\
 case "$1" in
   list)
     [ $# -eq 1 ] || usage
-    ids=$(docker ps -aq --no-trunc)
+    ids=$(timeout 10 docker ps -aq --no-trunc)
     [ -n "$ids" ] || exit 0
+    # A container removed between ps and inspect makes inspect exit 1 while
+    # still printing the others: keep that partial (but valid) output.
+    rc=0
     # shellcheck disable=SC2086 # ids are hex, one per line
-    exec timeout 20 docker inspect --format "$FMT" $ids
+    out=$(timeout 12 docker inspect --format "$FMT" $ids 2>/dev/null) || rc=$?
+    if [ "$rc" -ne 0 ] && { [ "$rc" -ne 1 ] || [ -z "$out" ]; }; then exit "$rc"; fi
+    printf '%s\n' "$out"
     ;;
   stats)
     [ $# -eq 1 ] || usage
-    exec timeout 20 docker stats --no-stream --format '{{json .}}'
+    exec timeout 12 docker stats --no-stream --format '{{json .}}'
     ;;
   restart)
     [ $# -eq 2 ] || usage
     [[ "$2" =~ $NAME_RE ]] || usage
-    exec timeout 90 docker restart --time 20 -- "$2"
+    [[ "$2" =~ $DENY_RE ]] && { echo "argos-docker: $2 is protected" >&2; exit 65; }
+    # Docker resolves a reference as full ID, then name, then ID prefix:
+    # require an exact NAME match and restart by the full ID it resolved to.
+    resolved=$(timeout 10 docker inspect --type container --format '{{.Name}} {{.Id}}' -- "$2" 2>/dev/null) || exit 65
+    [ "${resolved%% *}" = "/$2" ] || { echo "argos-docker: no container named $2" >&2; exit 65; }
+    id=${resolved#* }
+    [[ "$id" =~ ^[0-9a-f]{64}$ ]] || exit 65
+    exec timeout 90 docker restart --time 20 -- "$id"
     ;;
   *)
     usage
