@@ -18,8 +18,19 @@
 |---|---|---|---|
 | `ARGOS_ADDR` | exécution | non | adresse d'écoute (`:8080`, défaut de l'image) |
 | `ARGOS_DATA_DIR` | exécution | non | dossier des données persistantes (`/data`, défaut de l'image) |
-| `ARGOS_ADMIN_PASSWORD_HASH` | exécution | **oui** | hash argon2id du mot de passe du compte unique *(à ajouter avec la fonctionnalité d'authentification)* |
-| `ARGOS_SESSION_KEY` | exécution | **oui** | clé de signature des cookies de session, 32 octets aléatoires *(idem)* |
+| `ARGOS_ADMIN_PASSWORD_HASH` | exécution | **oui** | hash argon2id (format PHC) du mot de passe, produit par `argos hash-password`. Contient des `$` : cocher « Is Literal » dans Coolify pour éviter l'interpolation. |
+| `ARGOS_TOTP_SECRET` | exécution | **oui** | secret TOTP base32, produit par `argos totp-init` |
+
+Sans ces deux variables, Argos démarre (santé OK) mais la connexion renvoie `503`. Une seule des deux, ou une valeur invalide : le démarrage échoue.
+
+Générer les valeurs (dans ton terminal, jamais dans le chat) :
+
+```bash
+read -rs PW && printf '%s\n' "$PW" | go run ./cmd/argos hash-password; unset PW
+go run ./cmd/argos totp-init   # scanne l'URI otpauth:// dans ton appli d'authentification
+```
+
+Sessions en mémoire : un redéploiement déconnecte.
 
 Les valeurs vivent dans la ressource Coolify et dans `secrets/` (chiffré). Jamais dans le dépôt. Aucune variable de build.
 
