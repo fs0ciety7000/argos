@@ -101,7 +101,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	lines := make(chan Line, lineBuffer)
-	var dropped atomic.Int64
+	var dropped, total atomic.Int64
+	started := time.Now()
+	h.Logger.Info("log stream opened", "host", host, "container", name)
 	ended := make(chan error, 1)
 	go func() {
 		ended <- h.Streamer.Stream(ctx, host, cmd, func(b []byte, truncated bool) {
@@ -109,6 +111,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				dropped.Add(1)
 				return
 			}
+			total.Add(1)
 			select {
 			case lines <- parseLine(b, truncated):
 			default:
@@ -121,7 +124,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		cancel()
 		select {
-		case <-ended:
+		case err := <-ended:
+			h.Logger.Info("log stream closed", "host", host, "container", name, "reason", reason(err),
+				"lines", total.Load(), "duration", time.Since(started).Round(time.Second).String())
 		case <-time.After(endGrace):
 			h.Logger.Warn("log stream slow to stop", "host", host, "container", name)
 			slotHeld = false
